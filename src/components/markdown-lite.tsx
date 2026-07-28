@@ -1,6 +1,7 @@
+"use client";
+
 import type { ReactNode } from "react";
 
-"use client";
 
 // Renderizador leve para o markdown gerado pela IA (títulos, listas, negrito).
 // Mantém o HTML sob controle sem depender de bibliotecas externas.
