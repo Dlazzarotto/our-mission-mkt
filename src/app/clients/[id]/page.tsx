@@ -46,6 +46,15 @@ export default async function ClientPage({ params }: { params: Promise<{ id: str
         .limit(20),
     ]);
 
+  // O bucket brand-assets e privado: a exibicao usa uma URL assinada temporaria.
+  let logoUrl: string | null = null;
+  if (brandKit?.logo_path) {
+    const { data: assinada } = await supabase.storage
+      .from("brand-assets")
+      .createSignedUrl(brandKit.logo_path, 3600);
+    logoUrl = assinada?.signedUrl ?? null;
+  }
+
   return (
     <main className="min-h-screen bg-[#f6f8fb] pb-16">
       <header className="border-b border-slate-200 bg-white">
@@ -67,6 +76,8 @@ export default async function ClientPage({ params }: { params: Promise<{ id: str
         <ClientProfile
           client={client}
           brandKit={brandKit}
+          logoUrl={logoUrl}
+          organizationId={client.organization_id}
           plans={plans ?? []}
           researches={researches ?? []}
           contracts={contracts ?? []}

@@ -24,6 +24,8 @@ const requestSchema = z.object({
   visualStyle: z
     .enum(["classic", "current", "minimal", "editorial", "vibrant", "premium", "organic", "custom"])
     .optional(),
+  logoPath: z.string().trim().max(300).optional(),
+  hasLogo: z.boolean().nullable().optional(),
 });
 
 export async function PATCH(request: Request) {
@@ -44,6 +46,8 @@ export async function PATCH(request: Request) {
     if (payload.toneOfVoice !== undefined) updates.tone_of_voice = payload.toneOfVoice;
     if (payload.preferredCta !== undefined) updates.preferred_cta = payload.preferredCta;
     if (payload.visualStyle) updates.visual_style = payload.visualStyle;
+    if (payload.logoPath) updates.logo_path = payload.logoPath;
+    if (payload.hasLogo !== undefined) updates.has_logo = payload.hasLogo;
 
     if (Object.keys(updates).length === 0) {
       return NextResponse.json({ error: "Nenhuma alteração enviada." }, { status: 400 });

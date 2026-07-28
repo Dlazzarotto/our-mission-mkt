@@ -1,6 +1,8 @@
 "use client";
 
-import { LoaderCircle, Palette, Search, Sparkles, WandSparkles } from "lucide-react";
+import { ImagePlus, LoaderCircle, Palette, Search, Sparkles, WandSparkles } from "lucide-react";
+import { createClient as createBrowserClient } from "@/lib/supabase/client";
+import { paletteFromLogo, validarLogo } from "@/lib/brand/palette-from-image";
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { MarkdownLite } from "@/components/markdown-lite";
@@ -26,6 +28,7 @@ type BrandKitRow = {
   palette: PaletteShape;
   tone_of_voice: string;
   preferred_cta: string | null;
+  has_logo?: boolean | null;
 } | null;
 
 type ClientRow = {
@@ -126,6 +129,8 @@ const STATUS_LABELS: Record<string, string> = {
 export function ClientProfile({
   client,
   brandKit,
+  logoUrl,
+  organizationId,
   plans,
   researches,
   contracts,
@@ -133,6 +138,8 @@ export function ClientProfile({
 }: {
   client: ClientRow;
   brandKit: BrandKitRow;
+  logoUrl?: string | null;
+  organizationId: string;
   plans: PlanRow[];
   researches: ResearchRow[];
   contracts: ContractRow[];
@@ -153,8 +160,101 @@ export function ClientProfile({
   );
   const [tone, setTone] = useState(brandKit?.tone_of_voice ?? "Profissional, claro e acolhedor.");
   const [cta, setCta] = useState(brandKit?.preferred_cta ?? "");
+  const [temLogo, setTemLogo] = useState<boolean | null>(brandKit?.has_logo ?? null);
+  const [tarefaCriada, setTarefaCriada] = useState(false);
+  const [logoPreview, setLogoPreview] = useState<string | null>(logoUrl ?? null);
+  const [logoBusy, setLogoBusy] = useState(false);
+  const [logoMsg, setLogoMsg] = useState<string | null>(null);
   const [savingBrand, setSavingBrand] = useState(false);
   const [brandMessage, setBrandMessage] = useState<string | null>(null);
+
+  async function marcarTemLogo(valor: boolean) {
+    setTemLogo(valor);
+    setLogoMsg(null);
+    setTarefaCriada(false);
+    try {
+      await fetch("/api/brand-kit", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ clientId: client.id, hasLogo: valor }),
+      });
+      router.refresh();
+    } catch {
+      /* a escolha continua valendo na tela */
+    }
+  }
+
+  async function criarTarefaIdentidade() {
+    try {
+      const response = await fetch("/api/workflow", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          clientId: client.id,
+          title: "Criar identidade visual (logo e paleta)",
+          role: "designer",
+          dueInDays: 7,
+        }),
+      });
+      const data = await response.json();
+      if (data.success) setTarefaCriada(true);
+      else setLogoMsg(`Erro: ${data.error ?? "não consegui criar a tarefa"}`);
+    } catch (error) {
+      setLogoMsg(`Erro: ${error instanceof Error ? error.message : "falha ao criar a tarefa"}`);
+    }
+  }
+
+  async function enviarLogo(file: File) {
+    const problema = validarLogo(file);
+    if (problema) {
+      setLogoMsg(`Erro: ${problema}`);
+      return;
+    }
+    setLogoBusy(true);
+    setLogoMsg(null);
+    try {
+      // A paleta sai da imagem antes do upload — o resultado aparece na hora.
+      if (file.type !== "image/svg+xml") {
+        try {
+          const sugerida = await paletteFromLogo(file);
+          setPalette(sugerida);
+          setLogoMsg("Cores lidas do logo. Ajuste o que quiser antes de salvar.");
+        } catch {
+          setLogoMsg("Logo enviado. Não consegui ler as cores desta imagem — defina na mão.");
+        }
+      } else {
+        setLogoMsg("Logo enviado. SVG não permite leitura automática de cores.");
+      }
+
+      setLogoPreview(URL.createObjectURL(file));
+      setTemLogo(true);
+
+      const supabase = createBrowserClient();
+      const extensao = file.name.split(".").pop()?.toLowerCase() || "png";
+      // O primeiro nível da pasta precisa ser a organização: é assim que a
+      // permissão do bucket identifica quem pode ler e gravar.
+      const caminho = `${organizationId}/${client.id}/logo.${extensao}`;
+
+      const { error: uploadError } = await supabase.storage
+        .from("brand-assets")
+        .upload(caminho, file, { upsert: true, contentType: file.type });
+
+      if (uploadError) throw new Error(uploadError.message);
+
+      const response = await fetch("/api/brand-kit", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ clientId: client.id, logoPath: caminho, hasLogo: true }),
+      });
+      const data = await response.json();
+      if (!response.ok || !data.success) throw new Error(data.error ?? "Falha ao registrar o logo.");
+      router.refresh();
+    } catch (error) {
+      setLogoMsg(`Erro: ${error instanceof Error ? error.message : "não consegui enviar"}`);
+    } finally {
+      setLogoBusy(false);
+    }
+  }
 
   async function saveBrandKit() {
     setSavingBrand(true);
@@ -366,6 +466,102 @@ export function ClientProfile({
               próximas gerações de conteúdo usam automaticamente a paleta atualizada.
             </p>
 
+            {/* Este cliente tem logo? A resposta vira trabalho quando é "não". */}
+            <div className="mb-4">
+              <p className="mb-2 text-sm font-bold text-slate-900">
+                Este cliente já tem logomarca?
+              </p>
+              <div className="flex flex-wrap gap-2">
+                {([
+                  { valor: true, label: "Sim, tem logo" },
+                  { valor: false, label: "Não tem — precisa criar" },
+                ] as const).map((opcao) => (
+                  <button
+                    key={String(opcao.valor)}
+                    onClick={() => marcarTemLogo(opcao.valor)}
+                    className={`min-h-11 rounded-xl border-2 px-4 py-2.5 text-sm font-bold transition ${
+                      temLogo === opcao.valor
+                        ? "border-slate-950 bg-slate-950 text-white"
+                        : "border-slate-200 text-slate-600 hover:bg-slate-50"
+                    }`}
+                  >
+                    {opcao.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {temLogo === false ? (
+              <div className="mb-6 rounded-xl border border-amber-100 bg-amber-50 p-4">
+                <p className="text-sm font-bold text-amber-900">
+                  Criar a identidade visual é uma entrega da agência
+                </p>
+                <p className="mt-1 text-xs leading-5 text-amber-800">
+                  Sem logo, defina a paleta abaixo à mão. Ela guia os materiais até a marca existir.
+                </p>
+                {tarefaCriada ? (
+                  <p className="mt-3 text-xs font-bold text-emerald-700">
+                    Tarefa criada na fase atual, para o Designer.
+                  </p>
+                ) : (
+                  <button
+                    onClick={criarTarefaIdentidade}
+                    className="mt-3 min-h-10 rounded-lg border border-amber-300 bg-white px-3 py-2 text-xs font-bold text-amber-800 transition hover:bg-amber-100"
+                  >
+                    + Adicionar tarefa de criar identidade visual
+                  </button>
+                )}
+              </div>
+            ) : null}
+
+            {/* Logo: fonte das cores */}
+            {temLogo !== false ? (
+            <div className="mb-6 flex flex-wrap items-center gap-4 rounded-xl border border-slate-200 bg-slate-50/60 p-4">
+              <div className="flex h-20 w-20 shrink-0 items-center justify-center overflow-hidden rounded-xl border border-slate-200 bg-white">
+                {logoPreview ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img src={logoPreview} alt="Logo do cliente" className="max-h-full max-w-full object-contain" />
+                ) : (
+                  <ImagePlus className="h-6 w-6 text-slate-300" />
+                )}
+              </div>
+              <div className="min-w-0 flex-1">
+                <p className="text-sm font-bold text-slate-900">Logo do cliente</p>
+                <p className="mt-0.5 text-xs leading-5 text-slate-500">
+                  Ao enviar, o sistema lê as cores da imagem e preenche a paleta abaixo.
+                  Você ajusta o que quiser antes de salvar.
+                </p>
+                <label className="mt-2 inline-flex min-h-10 cursor-pointer items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-700 transition hover:bg-slate-50">
+                  {logoBusy ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <ImagePlus className="h-3.5 w-3.5" />}
+                  {logoBusy ? "Enviando..." : logoPreview ? "Trocar logo" : "Enviar logo"}
+                  <input
+                    type="file"
+                    accept="image/png,image/jpeg,image/webp,image/svg+xml"
+                    className="hidden"
+                    disabled={logoBusy}
+                    onChange={(event) => {
+                      const file = event.target.files?.[0];
+                      if (file) enviarLogo(file);
+                      event.target.value = "";
+                    }}
+                  />
+                </label>
+              </div>
+            </div>
+            ) : null}
+
+            {logoMsg ? (
+              <p
+                className={`mb-4 rounded-xl px-3 py-2.5 text-xs font-semibold ${
+                  logoMsg.startsWith("Erro")
+                    ? "border border-rose-100 bg-rose-50 text-rose-700"
+                    : "border border-emerald-100 bg-emerald-50 text-emerald-700"
+                }`}
+              >
+                {logoMsg}
+              </p>
+            ) : null}
+
             <div className="grid grid-cols-2 gap-4 sm:grid-cols-5">
               {PALETTE_LABELS.map(({ key, label }) => (
                 <label key={key} className="block">
@@ -400,9 +596,15 @@ export function ClientProfile({
               <p className="text-[11px] font-bold tracking-widest uppercase" style={{ color: palette.secondary }}>
                 Pré-visualização
               </p>
-              <p className="mt-1 text-lg font-bold" style={{ color: palette.primary }}>
-                {client.company_name}
-              </p>
+              <div className="mt-1 flex items-center gap-3">
+                {logoPreview ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img src={logoPreview} alt="" className="h-9 w-9 shrink-0 object-contain" />
+                ) : null}
+                <p className="text-lg font-bold" style={{ color: palette.primary }}>
+                  {client.company_name}
+                </p>
+              </div>
               <p className="mt-1 text-sm" style={{ color: palette.text }}>
                 Assim ficam os materiais com a identidade deste cliente.
               </p>
@@ -542,11 +744,12 @@ export function ClientProfile({
               <h3 className="text-base font-bold text-slate-950">Pesquisa de mercado por território</h3>
             </div>
             <p className="mb-4 text-sm text-slate-500">
-              Busca na web etapa por etapa, terminando com o veredicto de 0 a 10 do território.
+              Coleta os concorrentes reais no raio e depois analisa, etapa por etapa, terminando com
+              o veredicto de 0 a 10 do território.
             </p>
             <div className="mb-4 flex gap-2">
               {([
-                { id: "quick", label: "Rápida", hint: "3 etapas · 2 a 3 min" },
+                { id: "quick", label: "Rápida", hint: "4 etapas · 3 a 4 min" },
                 { id: "full", label: "Completa", hint: "10 etapas · 8 a 12 min" },
               ] as const).map((option) => (
                 <button
@@ -565,9 +768,10 @@ export function ClientProfile({
             </div>
             {depth === "full" ? (
               <p className="mb-4 rounded-xl bg-slate-50 px-3 py-2.5 text-xs leading-5 text-slate-600">
-                Sazonalidade, tabela de palavras com volume e CPC, até 20 concorrentes com ficha
-                completa, SEO e redes deles, uso de IA, nichos, oportunidades, orçamento de Ads e o
-                relatório final com plano de 12 meses.
+                Leitura da concorrência coletada, perfil do território, presença digital e uso de IA
+                pelos concorrentes, palavras-chave candidatas, nichos, oportunidades, funil,
+                estratégia de anúncios e o relatório com plano de 12 meses. Volume de busca e CPC só
+                aparecem com o Google Ads conectado — o sistema não estima esses números.
               </p>
             ) : null}
             <div className="flex flex-wrap items-end gap-3">

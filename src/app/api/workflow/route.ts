@@ -390,12 +390,83 @@ export async function POST(request: Request) {
 // ---------------------------------------------------------------------------
 // PATCH — atualiza uma tarefa
 // ---------------------------------------------------------------------------
+const novaTarefaSchema = z.object({
+  clientId: z.string().uuid(),
+  title: z.string().trim().min(3).max(200),
+  role: z.enum(["account", "strategist", "designer", "copywriter", "analyst", "client"]),
+  dueInDays: z.number().int().min(0).max(90).default(5),
+});
+
 const taskSchema = z.object({
   taskId: z.string().uuid(),
   status: z.enum(["todo", "doing", "blocked", "done"]).optional(),
   assigneeId: z.string().uuid().nullable().optional(),
   blockedReason: z.string().trim().max(300).optional(),
 });
+
+// PUT — cria uma tarefa avulsa na fase atual do cliente
+export async function PUT(request: Request) {
+  try {
+    const payload = novaTarefaSchema.parse(await request.json());
+    const supabase = await createClient();
+
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+    if (authError || !user) {
+      return NextResponse.json({ error: "Sessão inválida." }, { status: 401 });
+    }
+
+    const { data: workflow } = await supabase
+      .from("client_workflow")
+      .select("organization_id, phase, cycle")
+      .eq("client_id", payload.clientId)
+      .maybeSingle();
+
+    if (!workflow) {
+      return NextResponse.json({ error: "Cliente não está no workflow." }, { status: 404 });
+    }
+
+    // Evita duplicar a mesma tarefa se o botão for clicado duas vezes.
+    const { data: existente } = await supabase
+      .from("workflow_tasks")
+      .select("id")
+      .eq("client_id", payload.clientId)
+      .eq("phase", workflow.phase)
+      .eq("cycle", workflow.cycle)
+      .eq("title", payload.title)
+      .maybeSingle();
+
+    if (existente) {
+      return NextResponse.json({ success: true, task: existente, jaExistia: true });
+    }
+
+    const { data, error } = await supabase
+      .from("workflow_tasks")
+      .insert({
+        organization_id: workflow.organization_id,
+        client_id: payload.clientId,
+        phase: workflow.phase,
+        cycle: workflow.cycle,
+        title: payload.title,
+        role: payload.role,
+        due_at: dueDateFor(new Date(), payload.dueInDays).toISOString(),
+      })
+      .select("*")
+      .single();
+
+    if (error || !data) throw new Error(error?.message ?? "Falha ao criar a tarefa.");
+
+    return NextResponse.json({ success: true, task: data });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Erro desconhecido";
+    return NextResponse.json(
+      { success: false, error: message },
+      { status: error instanceof z.ZodError ? 400 : 500 },
+    );
+  }
+}
 
 export async function PATCH(request: Request) {
   try {
