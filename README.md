@@ -254,3 +254,25 @@ O módulo separa o que foi **medido** do que é **interpretação**:
 202607270001_junction_palette_research_plans.sql
 202607270002_workflow.sql
 ```
+
+## Geração de imagem das peças
+
+Na aba **Conteúdo**, cada peça tem os botões **Gerar imagem** e **Alta qualidade**. A imagem
+sai com a **paleta do cliente** — mesma regra do resto do sistema: a identidade é dele.
+
+- **Gerar imagem** usa o modelo rápido do Gemini (`gemini-3.1-flash-image`), adequado para redes sociais
+- **Alta qualidade** usa `gemini-3-pro-image`, melhor quando a imagem precisa de texto legível — custa mais
+
+O prompt final combina a direção criativa da peça (`image_prompt`) com as cores, o estilo
+visual e o segmento do cliente, e pede proporção conforme o formato: 9:16 para story e reel,
+16:9 para vídeo, 1:1 para o resto.
+
+A imagem vai para o bucket privado `brand-assets` em `{org}/{cliente}/content/{peça}.png`, e a
+exibição usa URL assinada temporária.
+
+### Chave necessária
+```
+GOOGLE_AI_API_KEY
+```
+Criada em **aistudio.google.com** — é **diferente** da `GOOGLE_MAPS_API_KEY`. Sem ela, os botões
+respondem que a geração não está configurada, em vez de falhar em silêncio.

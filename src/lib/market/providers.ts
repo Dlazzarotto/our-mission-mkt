@@ -6,7 +6,7 @@
 // ou fora de alcance — e a interface mostra esse estado ao lado do dado.
 // ============================================================
 
-export type ProviderId = "google_places" | "google_ads" | "google_trends" | "dataforseo";
+export type ProviderId = "google_places" | "google_ads" | "google_trends" | "dataforseo" | "google_ai_image";
 
 export type ProviderStatus = {
   id: ProviderId;
@@ -52,6 +52,14 @@ export function getProviderStatus(): ProviderStatus[] {
       connected: Boolean(process.env.GOOGLE_TRENDS_API_KEY),
       reason: "API em alpha, acesso por convite — normalmente indisponível",
       howTo: "Solicite acesso ao programa alpha da Trends API.",
+    },
+    {
+      id: "google_ai_image",
+      label: "Geração de imagem (Gemini)",
+      delivers: "Cria a imagem da peça com as cores do cliente",
+      connected: Boolean(process.env.GOOGLE_AI_API_KEY),
+      reason: process.env.GOOGLE_AI_API_KEY ? undefined : "GOOGLE_AI_API_KEY não configurada",
+      howTo: "Crie a chave em aistudio.google.com — é diferente da chave do Maps.",
     },
     {
       id: "dataforseo",

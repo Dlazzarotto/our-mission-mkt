@@ -40,7 +40,7 @@ export default async function ClientPage({ params }: { params: Promise<{ id: str
         .order("created_at", { ascending: false }),
       supabase
         .from("content_items")
-        .select("id, title, scheduled_at, channel, format, status, caption")
+        .select("id, title, scheduled_at, channel, format, status, caption, image_prompt, media_path")
         .eq("client_id", id)
         .order("scheduled_at", { ascending: false })
         .limit(20),
@@ -54,6 +54,17 @@ export default async function ClientPage({ params }: { params: Promise<{ id: str
       .createSignedUrl(brandKit.logo_path, 3600);
     logoUrl = assinada?.signedUrl ?? null;
   }
+
+  // Imagens ja geradas: o bucket e privado, entao cada uma ganha URL temporaria.
+  const contentComImagem = await Promise.all(
+    (contentItems ?? []).map(async (item) => {
+      if (!item.media_path) return { ...item, media_url: null };
+      const { data: assinada } = await supabase.storage
+        .from("brand-assets")
+        .createSignedUrl(item.media_path, 3600);
+      return { ...item, media_url: assinada?.signedUrl ?? null };
+    }),
+  );
 
   return (
     <main className="min-h-screen bg-[#f6f8fb] pb-16">
@@ -81,7 +92,7 @@ export default async function ClientPage({ params }: { params: Promise<{ id: str
           plans={plans ?? []}
           researches={researches ?? []}
           contracts={contracts ?? []}
-          contentItems={contentItems ?? []}
+          contentItems={contentComImagem}
         />
       </div>
     </main>

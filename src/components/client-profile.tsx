@@ -78,6 +78,8 @@ type ContentRow = {
   format: string;
   status: string;
   caption: string | null;
+  image_prompt?: string | null;
+  media_url?: string | null;
 };
 
 const PALETTE_LABELS: Array<{ key: keyof PaletteShape; label: string }> = [
@@ -396,8 +398,35 @@ export function ClientProfile({
   }
 
   // ----- Conteúdo -----
+  const [imagens, setImagens] = useState<Record<string, string>>({});
+  const [gerandoImagem, setGerandoImagem] = useState<string | null>(null);
+  const [erroImagem, setErroImagem] = useState<Record<string, string>>({});
   const [queueMessage, setQueueMessage] = useState<string | null>(null);
   const [queueing, setQueueing] = useState(false);
+
+  async function gerarImagemDaPeca(item: ContentRow, qualidade: "rapida" | "alta") {
+    if (gerandoImagem) return;
+    setGerandoImagem(item.id);
+    setErroImagem((atual) => ({ ...atual, [item.id]: "" }));
+    try {
+      const response = await fetch("/api/content/image", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ contentItemId: item.id, qualidade }),
+      });
+      const data = await response.json();
+      if (!response.ok || !data.success) throw new Error(data.error ?? "Falha ao gerar a imagem.");
+      if (data.url) setImagens((atual) => ({ ...atual, [item.id]: data.url }));
+      router.refresh();
+    } catch (error) {
+      setErroImagem((atual) => ({
+        ...atual,
+        [item.id]: error instanceof Error ? error.message : "Erro desconhecido",
+      }));
+    } finally {
+      setGerandoImagem(null);
+    }
+  }
 
   async function queueCampaign() {
     setQueueing(true);
@@ -1004,11 +1033,67 @@ export function ClientProfile({
                     </span>
                   </span>
                 </summary>
-                {item.caption ? (
-                  <div className="border-t border-slate-100 px-5 py-4 text-sm whitespace-pre-wrap text-slate-700">
-                    {item.caption}
+                <div className="border-t border-slate-100 px-5 py-4">
+                  {item.caption ? (
+                    <div className="mb-4 text-sm whitespace-pre-wrap text-slate-700">{item.caption}</div>
+                  ) : null}
+
+                  {/* Imagem da peça */}
+                  {imagens[item.id] || item.media_url ? (
+                    <div className="mb-3">
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img
+                        src={imagens[item.id] || item.media_url || ""}
+                        alt={item.title}
+                        className="max-h-80 rounded-xl border border-slate-200 object-contain"
+                      />
+                    </div>
+                  ) : null}
+
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      onClick={() => gerarImagemDaPeca(item, "rapida")}
+                      disabled={gerandoImagem !== null}
+                      className="inline-flex min-h-10 items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-700 transition hover:bg-slate-50 disabled:opacity-50"
+                    >
+                      {gerandoImagem === item.id ? (
+                        <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        <ImagePlus className="h-3.5 w-3.5" />
+                      )}
+                      {gerandoImagem === item.id
+                        ? "Criando..."
+                        : imagens[item.id] || item.media_url
+                          ? "Gerar outra"
+                          : "Gerar imagem"}
+                    </button>
+                    <button
+                      onClick={() => gerarImagemDaPeca(item, "alta")}
+                      disabled={gerandoImagem !== null}
+                      className="min-h-10 rounded-lg border border-slate-200 px-3 py-2 text-xs font-bold text-slate-500 transition hover:bg-slate-50 disabled:opacity-50"
+                      title="Modelo melhor para imagens com texto — custa mais"
+                    >
+                      Alta qualidade
+                    </button>
+                    {imagens[item.id] || item.media_url ? (
+                      <a
+                        href={imagens[item.id] || item.media_url || ""}
+                        download
+                        target="_blank"
+                        rel="noreferrer noopener"
+                        className="inline-flex min-h-10 items-center rounded-lg border border-slate-200 px-3 py-2 text-xs font-bold text-slate-600 transition hover:bg-slate-50"
+                      >
+                        Baixar
+                      </a>
+                    ) : null}
                   </div>
-                ) : null}
+
+                  {erroImagem[item.id] ? (
+                    <p className="mt-2 rounded-lg border border-rose-100 bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-700">
+                      {erroImagem[item.id]}
+                    </p>
+                  ) : null}
+                </div>
               </details>
             ))
           )}
