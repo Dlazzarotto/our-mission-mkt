@@ -1,9 +1,9 @@
 "use client";
 
-import { Sparkles } from "lucide-react";
+import Image from "next/image";
 import { FormEvent, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
-import { AGENCY_NAME } from "@/lib/brand";
+import { AGENCY_LOGO, AGENCY_NAME } from "@/lib/brand";
 
 export default function LoginPage() {
   const [email, setEmail] = useState("");
@@ -31,9 +31,15 @@ export default function LoginPage() {
   return (
     <main className="flex min-h-screen items-center justify-center bg-[#f6f8fb] p-5">
       <section className="w-full max-w-md rounded-3xl border border-slate-200 bg-white p-7 shadow-[0_24px_70px_-35px_rgba(15,23,42,0.35)] sm:p-9">
-        <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-slate-950"><Sparkles className="h-5 w-5 text-[#F6AE2D]" /></div>
-        <p className="mt-6 text-xs font-bold tracking-[0.16em] text-sky-700 uppercase">{AGENCY_NAME}</p>
-        <h1 className="mt-2 text-3xl font-bold tracking-tight text-slate-950">Acesse sua operação.</h1>
+        <Image
+          src={AGENCY_LOGO.src}
+          width={AGENCY_LOGO.width}
+          height={AGENCY_LOGO.height}
+          alt={AGENCY_NAME}
+          priority
+          className="h-auto w-full rounded-2xl"
+        />
+        <h1 className="mt-7 text-3xl font-bold tracking-tight text-slate-950">Acesse sua operação.</h1>
         <p className="mt-3 text-sm leading-6 text-slate-500">Entre com sua conta para gerir clientes, contratos e os rascunhos criados por IA.</p>
 
         <form onSubmit={handleSubmit} className="mt-7 space-y-4">

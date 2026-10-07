@@ -1,10 +1,11 @@
+import Image from "next/image";
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { CriarAgencia } from "@/components/criar-agencia";
 import { NovoCliente } from "@/components/novo-cliente";
 import { Equipe } from "@/components/equipe";
-import { PRODUCT_NAME } from "@/lib/brand";
+import { AGENCY_ICON, AGENCY_NAME, PRODUCT_NAME } from "@/lib/brand";
 
 export const dynamic = "force-dynamic";
 
@@ -48,11 +49,21 @@ export default async function Home() {
     <main className="min-h-screen bg-[#f6f8fb] pb-16">
       <header className="border-b border-slate-200 bg-white">
         <div className="mx-auto flex max-w-4xl flex-wrap items-center justify-between gap-3 px-5 py-5">
-          <div>
-            <p className="text-[11px] font-bold tracking-[0.16em] text-sky-700 uppercase">
-              {PRODUCT_NAME}
-            </p>
-            <h1 className="text-2xl font-bold tracking-tight text-slate-950">{organizationName}</h1>
+          <div className="flex items-center gap-3">
+            <Image
+              src={AGENCY_ICON.src}
+              width={AGENCY_ICON.width}
+              height={AGENCY_ICON.height}
+              alt={AGENCY_NAME}
+              priority
+              className="h-11 w-11 rounded-xl"
+            />
+            <div>
+              <p className="text-[11px] font-bold tracking-[0.16em] text-sky-700 uppercase">
+                {PRODUCT_NAME}
+              </p>
+              <h1 className="text-2xl font-bold tracking-tight text-slate-950">{organizationName}</h1>
+            </div>
           </div>
           <Link
             href="/workflow"
