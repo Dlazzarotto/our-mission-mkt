@@ -8,6 +8,8 @@ Verifica, sem precisar de rede ou node_modules:
   D. tabelas/colunas usadas no código existem no schema SQL
   E. valores literais de enum usados no código existem nos enums SQL
   F. conflitos entre as duas migrations (nomes duplicados) e re-execução
+  G. no estado final das migrations, no máximo UMA FK por par (tabela filha, tabela pai)
+     — o PostgREST recusa embed com 2+ FKs entre as mesmas tabelas (PGRST201)
 """
 import os
 import re
@@ -148,9 +150,17 @@ def parse_schema(sql_total):
         for col in re.finditer(r"add column (?:if not exists )?(\w+)", corpo, re.I):
             tabelas[nome].add(col.group(1))
 
+    # Views: existem para o PostgREST, mas as colunas vêm de um SELECT (não dá para
+    # extrair por regex com segurança). None = "existe; colunas conferidas pelos
+    # testes de banco em tests/db" — o auditor não acusa coluna desconhecida.
+    for m in re.finditer(r"create (?:or replace )?view public\.(\w+)", sql_total, re.I):
+        tabelas.setdefault(m.group(1), None)
+
     enums = {}
     for m in re.finditer(r"create type public\.(\w+) as enum\s*\((.*?)\);", sql_total, re.S):
         enums[m.group(1)] = set(re.findall(r"'([^']+)'", m.group(2)))
+    for m in re.finditer(r"alter type public\.(\w+) add value (?:if not exists )?'([^']+)'", sql_total, re.I):
+        enums.setdefault(m.group(1), set()).add(m.group(2))
     return tabelas, enums
 
 
@@ -176,10 +186,12 @@ def checar_sql_uso(tabelas, enums):
                 erro("SQL", f"{rel(path)} usa tabela '{tabela}' — inexistente no schema")
                 continue
             cols = tabelas[tabela]
-            # colunas em .select("a, b, c") — ignora joins tipo tabela(col)
+            if cols is None:
+                continue  # view: colunas validadas pelos testes de banco
+            # colunas em .select("a, b, c") — ignora joins tipo tabela(col) e tabela!inner(col)
             sel = re.search(r'\.select\(\s*"([^"]+)"', resto)
             if sel and sel.group(1).strip() != "*":
-                texto = re.sub(r"\w+\([^)]*\)", "", sel.group(1))
+                texto = re.sub(r"[\w!]+\([^)]*\)", "", sel.group(1))
                 for campo in texto.split(","):
                     campo = campo.strip()
                     if campo and campo != "*" and campo not in cols:
@@ -238,7 +250,8 @@ def checar_migrations(sqls):
             for rotulo, padrao in [
                 ("tabela", r"create table (?:if not exists )?public\.(\w+)"),
                 ("policy", r"create policy (\w+)"),
-                ("trigger", r"create trigger (\w+)"),
+                # Trigger é por TABELA: o mesmo nome em tabelas diferentes não é duplicata.
+                ("trigger", r"create trigger (\w+)\s+(?:before|after|instead of)[^;]*?\son\s+public\.(\w+)"),
                 ("type", r"create type public\.(\w+)"),
             ]:
                 dup = extrair(sqls[a], padrao) & extrair(sqls[b], padrao)
@@ -260,6 +273,118 @@ def checar_migrations(sqls):
                 )
 
 
+# ------------------------------------------- G. uma FK por par de tabelas
+def _sem_corpos(sql):
+    """Remove comentários e corpos $$...$$ (funções/DO): só sobra DDL de topo."""
+    sql = re.sub(r"--[^\n]*", "", sql)
+    sql = re.sub(r"\$(\w*)\$.*?\$\1\$", "''", sql, flags=re.S)
+    # Literais de texto (defaults jsonb, mensagens) podem ter vírgula, ';' e parênteses.
+    sql = re.sub(r"'(?:[^']|'')*'", "''", sql)
+    return sql
+
+
+def _partes_topo(texto):
+    """Divide por vírgulas que estão fora de parênteses."""
+    partes, nivel, atual = [], 0, []
+    for ch in texto:
+        if ch == "(":
+            nivel += 1
+        elif ch == ")":
+            nivel -= 1
+        if ch == "," and nivel == 0:
+            partes.append("".join(atual))
+            atual = []
+        else:
+            atual.append(ch)
+    partes.append("".join(atual))
+    return [p.strip() for p in partes if p.strip()]
+
+
+def _pai(ref):
+    ref = ref.strip().strip('"').lower()
+    return ref if "." in ref else f"public.{ref}"
+
+
+REF = r"\breferences\s+([\w\".]+)"
+
+
+def estado_final_fks(sqls):
+    """Simula, na ordem das migrations, cada FK criada/derrubada.
+    Devolve {(tabela_filha, nome_da_fk): tabela_pai} do estado final."""
+    fks = {}
+    for nome_arquivo in sorted(sqls):
+        sql = _sem_corpos(sqls[nome_arquivo])
+        for stmt in sql.split(";"):
+            s = " ".join(stmt.split())
+            low = s.lower()
+            m = re.match(r"create table (if not exists )?public\.(\w+)\s*\((.*)\)\s*$", s, re.I)
+            if m:
+                tabela = m.group(2).lower()
+                if m.group(1) and any(t == tabela for t, _ in fks):
+                    continue
+                for item in _partes_topo(m.group(3)):
+                    il = item.lower()
+                    r = re.search(REF, item, re.I)
+                    if not r:
+                        continue
+                    c = re.match(r"constraint (\w+) foreign key", il)
+                    f = re.match(r"foreign key\s*\(\s*(\w+)", il)
+                    if c:
+                        nome = c.group(1)
+                    elif f:
+                        nome = f"{tabela}_{f.group(1)}_fkey"
+                    else:
+                        nome = f"{tabela}_{il.split()[0]}_fkey"
+                    fks[(tabela, nome)] = _pai(r.group(1))
+                continue
+            m = re.match(r"alter table (?:if exists )?(?:only )?public\.(\w+)\s+(.*)$", s, re.I)
+            if m:
+                tabela = m.group(1).lower()
+                for acao in _partes_topo(m.group(2)):
+                    al = acao.lower()
+                    d = re.match(r"drop constraint (?:if exists )?(\w+)", al)
+                    if d:
+                        fks.pop((tabela, d.group(1)), None)
+                        continue
+                    r = re.search(REF, acao, re.I)
+                    if not r:
+                        continue
+                    c = re.match(r"add constraint (\w+) foreign key", al)
+                    f = re.match(r"add foreign key\s*\(\s*(\w+)", al)
+                    col = re.match(r"add column (?:if not exists )?(\w+)", al)
+                    if c:
+                        nome = c.group(1)
+                    elif f:
+                        nome = f"{tabela}_{f.group(1)}_fkey"
+                    elif col:
+                        nome = f"{tabela}_{col.group(1)}_fkey"
+                    else:
+                        continue
+                    fks[(tabela, nome)] = _pai(r.group(1))
+                continue
+            m = re.match(r"drop table (?:if exists )?public\.(\w+)", low)
+            if m:
+                for chave in [k for k in fks if k[0] == m.group(1)]:
+                    fks.pop(chave)
+    return fks
+
+
+def checar_fk_por_par(sqls):
+    """PostgREST (PGRST201) recusa embed quando há 2+ FKs entre o mesmo par de tabelas."""
+    pares = {}
+    for (tabela, nome), pai in estado_final_fks(sqls).items():
+        if pai.startswith("public."):
+            pares.setdefault((tabela, pai[len("public."):]), []).append(nome)
+    for (filha, pai), nomes in sorted(pares.items()):
+        if len(nomes) > 1:
+            erro(
+                "FK",
+                f"{filha} → {pai} tem {len(nomes)} FKs ({', '.join(sorted(nomes))}): o PostgREST "
+                f"recusa o embed (PGRST201). Funda numa FK composta só.",
+            )
+    return pares
+
+
 def main():
     sqls = carregar_sql()
     sql_total = "\n".join(sqls.values())
@@ -270,6 +395,8 @@ def main():
     checar_fetches(rotas)
     checar_sql_uso(tabelas, enums)
     checar_migrations(sqls)
+    pares_fk = checar_fk_por_par(sqls)
+    print(f"Relações (FK) entre tabelas public: {len(pares_fk)}")
 
     print(f"Tabelas no schema: {len(tabelas)} | Enums: {len(enums)} | Rotas de API: {len(rotas)}")
     for url, info in sorted(rotas.items()):

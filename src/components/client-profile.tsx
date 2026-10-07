@@ -6,6 +6,7 @@ import { paletteFromLogo, validarLogo } from "@/lib/brand/palette-from-image";
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { MarkdownLite } from "@/components/markdown-lite";
+import { ResultsPanel } from "@/components/results-panel";
 import { WorkflowPanel } from "@/components/workflow-panel";
 
 // ============================================================
@@ -148,7 +149,7 @@ export function ClientProfile({
   contentItems: ContentRow[];
 }) {
   const router = useRouter();
-  const [tab, setTab] = useState<"processo" | "marca" | "plano" | "pesquisa" | "conteudo">("processo");
+  const [tab, setTab] = useState<"processo" | "marca" | "plano" | "pesquisa" | "conteudo" | "resultados">("processo");
 
   // ----- Marca & Paleta -----
   const [palette, setPalette] = useState<PaletteShape>(
@@ -477,10 +478,16 @@ export function ClientProfile({
         <button onClick={() => setTab("conteudo")} className={tabClass(tab === "conteudo")}>
           ✍️ Conteúdo
         </button>
+        <button onClick={() => setTab("resultados")} className={tabClass(tab === "resultados")}>
+          📈 Resultados
+        </button>
       </nav>
 
       {/* ================= PROCESSO ================= */}
       {tab === "processo" ? <WorkflowPanel clientId={client.id} /> : null}
+
+      {/* ================= RESULTADOS (medição e atribuição) ================= */}
+      {tab === "resultados" ? <ResultsPanel clientId={client.id} /> : null}
 
       {/* ================= MARCA & PALETA ================= */}
       {tab === "marca" ? (
