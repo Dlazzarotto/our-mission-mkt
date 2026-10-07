@@ -294,11 +294,16 @@ Tudo fica na aba **📈 Resultados** do perfil do cliente.
 | Lead automático | formulário hospedado ou `POST /api/public/leads` a partir do site do cliente (ver abaixo) |
 | Lead manual | ligação, indicação, visita — com "como nos conheceu" |
 | Funil | Novo → Contatado → Qualificado → Virou cliente (com valor) / Perdido / Spam — etapas carimbadas pelo banco, histórico imutável |
-| Métricas da rede | lançamento manual por peça e dia (impressões, alcance, engajamento, cliques, views, investimento); lançar o mesmo dia de novo substitui |
+| Métricas da rede | lançamento manual por peça e dia (impressões, alcance, engajamento, cliques, views, investimento); lançar o mesmo dia de novo substitui. Origem (`source`) só aceita `manual`, `meta`, `tiktok`, `youtube`, `linkedin`, `pinterest`, `google`. Se o mesmo dia tiver API e manual, a view usa **só a API** (não soma); alcance = maior valor diário (alcance não é aditivo) |
 | Publicação | "Marcar como publicada" com link do post — só para peça aprovada/agendada |
 | Indicadores | CPL, CPA, ROAS, CTR, taxa de lead e de conversão **calculados por views no banco** (`v_content_results`, `v_channel_results`, `v_location_results`, `v_family_results`, `v_content_scores`). Sem base = "sem dado", nunca zero |
-| Nota S–F | relativa ao histórico do próprio cliente (90 dias), pesos: receita 35, clientes 25, qualificados 15, leads 15, CTR 5, alcance 5. Exige amostra mínima e 5+ peças medidas — senão "dados insuficientes" |
-| Família | a IA agora devolve `concept`, `hook` e `cta` por peça; peças com o mesmo conceito viram uma família (`CF-00001`), cada peça ganha código (`C-00001`), cada lead (`LD-00001`) |
+| Nota S–F | relativa ao histórico do próprio cliente (90 dias), pesos: receita 35, clientes 25, qualificados 15, leads 15, CTR 5, alcance 5. Indicador em que nenhuma peça pontuou sai da conta (a nota é normalizada pelos pesos que sobram). Exige amostra mínima, 5+ peças medidas e algum indicador de negócio (receita, clientes, qualificados ou leads) — senão "dados insuficientes" |
+| Cliques | `tracked_clicks` = visitantes únicos humanos (por visitante; sem ele, por hash de IP); `raw_clicks` = total bruto. Taxa de lead = visitantes que viraram lead **com clique comprovado** ÷ visitantes (nunca passa de 100%) |
+| Origem do lead (`attribution`, calculada pelo banco) | `click` (clique comprovado) · `link_no_click` (veio por um link nosso, sem clique registrado — ex.: lead manual com link) · `self_reported` ("como nos conheceu") · `unknown`. Prova de clique só nasce na rota pública (servidor); com link, a peça do lead é sempre a do link; a origem não pode ser trocada depois |
+| Família | a IA agora devolve `concept`, `hook` e `cta` por peça; peças com o mesmo conceito viram uma família (`CF-00001`), cada peça ganha código (`C-00001`), cada lead (`LD-00001`). Os códigos são sempre gerados pelo banco (valor enviado é ignorado) e não mudam |
+| Append-only | clique e histórico do funil não mudam e não podem ser apagados direto. Link com clique **não se apaga: desativa-se**. Saem só junto com o cliente/agência inteiro (o histórico também sai com o próprio lead) |
+| Integridade | toda relação entre tabelas é **uma** FK composta (agência + cliente): referência cruzada vira erro do banco, e o PostgREST nunca vê duas FKs entre as mesmas tabelas (erro PGRST201). O `pnpm audit` e o `pnpm test:db` recusam par com 2+ FKs |
+| Limite de envios | `consume_rate_limit(bucket, janela_seg, máximo)` — atômico no banco, só o `service_role` executa; usado pelas rotas públicas |
 
 ### Lead vindo do formulário do site do cliente
 
@@ -340,7 +345,7 @@ Se o site não tiver como enviar, use o modo **formulário hospedado** no link.
 ### Testes
 
 ```
-pnpm test        # testes internos (32) + banco real em memória (38)
+pnpm test        # testes internos (32) + banco real em memória (67)
 pnpm test:db     # só o banco: isolamento, atribuição, funil, views, fila
 pnpm audit       # contratos de código × schema
 ```
