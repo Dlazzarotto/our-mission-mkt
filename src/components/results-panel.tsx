@@ -281,7 +281,7 @@ export function ResultsPanel({ clientId }: { clientId: string }) {
         <Kpi label="Viraram clientes" value={fmtInt(t.customers)} hint={`conversão ${fmtPct(t.conversionRate)}`} strong />
         <Kpi label="Leads qualificados" value={fmtInt(t.qualified)} />
         <Kpi label="Leads" value={fmtInt(t.leads)} hint={`${fmtPct(t.attributedShare)} com origem comprovada`} />
-        <Kpi label="Cliques rastreados" value={fmtInt(t.trackedClicks)} hint={`taxa de lead ${fmtPct(t.leadRate)}`} />
+        <Kpi label="Cliques rastreados (visitantes únicos)" value={fmtInt(t.trackedClicks)} hint={`taxa de lead ${fmtPct(t.leadRate)}`} />
         <Kpi label="Investimento" value={fmtMoney(t.spend)} />
         <Kpi label="Custo por lead (CPL)" value={fmtMoney(t.cpl)} hint={`por cliente ${fmtMoney(t.cpa)}`} />
         <Kpi label="ROAS" value={fmtRoas(t.roas)} hint="receita ÷ investimento" />
@@ -442,7 +442,7 @@ function LinksSection({ data, clientId, act }: { data: Results; clientId: string
                 </p>
               </div>
               <div className="flex items-center gap-2 text-xs text-slate-600">
-                <span className="font-bold">{integer.format(link.clicks)} cliques</span>
+                <span className="font-bold">{integer.format(link.clicks)} cliques (total)</span>
                 <span className="font-bold">{integer.format(link.lead_count)} leads</span>
                 <button onClick={() => copy(link.slug)} className={buttonGhost}>
                   {copied === link.slug ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}

@@ -287,6 +287,22 @@ await test("job travado há mais de 15 min não bloqueia o cliente (é reassumid
   eq(claimed.map((j) => `${j.id}:${j.attempts}`).join(), `${stuck}:2`);
 });
 
+await test("lote 'failed' ou 'cancelled' sem campanha volta para a fila (nova tentativa); o resto não", async () => {
+  const failed = await mkJob(ORG_A, clientA, contractA, { status: "failed", attempts: 3 });
+  const cancelled = await mkJob(ORG_A, clientA, contractA, { status: "cancelled" });
+  const requeue = (job, user) => asUser(db, user, () => one(`select requeue_generation_job($1) as id`, [job]));
+  eq((await requeue(failed, U.ownerA)).id, failed, "failed:");
+  const f = await one(`select status, attempts, error_message from generation_jobs where id = $1`, [failed]);
+  eq(`${f.status}|${f.attempts}|${f.error_message}`, "queued|0|null");
+  eq((await requeue(cancelled, U.ownerA)).id, cancelled, "cancelled:");
+  // Job concluído (com campanha) não é reaberto.
+  eq((await requeue(jobOk, U.ownerA)).id, null, "completed:");
+  // Outra agência não reenfileira.
+  const other = await mkJob(ORG_A, clientA, contractA, { status: "failed", attempts: 3 });
+  await expectError(() => requeue(other, U.ownerB), /sem permissão/, "agência B:");
+  eq((await one(`select status from generation_jobs where id = $1`, [other])).status, "failed", "intacto:");
+});
+
 // ===========================================================================
 console.log(`\n${"=".repeat(60)}\nGeração: ${passed} passaram · ${failures.length} falharam`);
 if (failures.length > 0) {

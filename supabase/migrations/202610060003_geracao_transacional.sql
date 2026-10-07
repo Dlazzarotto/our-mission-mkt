@@ -253,4 +253,45 @@ $$;
 revoke all on function public.complete_generation_job(uuid, text, jsonb, jsonb, jsonb) from public, anon, authenticated;
 grant execute on function public.complete_generation_job(uuid, text, jsonb, jsonb, jsonb) to service_role;
 
+-- ============================================================
+-- NOVA TENTATIVA de um lote que falhou ou foi cancelado.
+-- A chave do lote é (contrato, fim do ciclo): um job 'failed' (IA fora do ar, tentativas
+-- esgotadas) ou 'cancelled' (contrato pausado e reativado) ocuparia o ciclo para sempre.
+-- Só volta para a fila job sem campanha gravada; quem pede precisa ser editor da agência.
+-- Devolve o id do job reenfileirado, ou NULL quando não há o que reenfileirar.
+-- ============================================================
+create or replace function public.requeue_generation_job(p_job_id uuid)
+returns uuid
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_org uuid;
+  v_id uuid;
+begin
+  select organization_id into v_org from public.generation_jobs where id = p_job_id;
+  if v_org is null or not public.is_organization_editor(v_org) then
+    raise exception 'Job não encontrado ou sem permissão.' using errcode = '42501';
+  end if;
+
+  update public.generation_jobs
+     set status = 'queued',
+         attempts = 0,
+         scheduled_for = now(),
+         locked_at = null,
+         locked_by = null,
+         error_message = null
+   where id = p_job_id
+     and status in ('failed', 'cancelled')
+     and campaign_id is null
+  returning id into v_id;
+
+  return v_id;
+end;
+$$;
+
+revoke all on function public.requeue_generation_job(uuid) from public, anon;
+grant execute on function public.requeue_generation_job(uuid) to authenticated, service_role;
+
 notify pgrst, 'reload schema';

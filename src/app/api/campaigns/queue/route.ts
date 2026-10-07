@@ -74,14 +74,25 @@ export async function POST(request: Request) {
       throw new Error(insertError.message);
     }
 
-    const { data: job, error: jobError } = await supabase
+    const { data: existing, error: jobError } = await supabase
       .from("generation_jobs")
       .select("id, status, scheduled_for")
       .eq("idempotency_key", idempotencyKey)
       .single();
 
-    if (jobError || !job) {
+    if (jobError || !existing) {
       throw new Error(jobError?.message ?? "Não foi possível localizar o job enfileirado.");
+    }
+
+    // Lote do ciclo que falhou ou foi cancelado: o pedido manual é a nova tentativa
+    // (a chave do ciclo é única; sem isto o ciclo ficaria sem conteúdo para sempre).
+    let job = existing;
+    if (existing.status === "failed" || existing.status === "cancelled") {
+      const { data: requeuedId, error: requeueError } = await supabase.rpc("requeue_generation_job", {
+        p_job_id: existing.id,
+      });
+      if (requeueError) throw new Error(requeueError.message);
+      if (requeuedId) job = { ...existing, status: "queued" };
     }
 
     // Dispara o worker sem esperar: a tela responde na hora (antes esperava a fila global inteira).

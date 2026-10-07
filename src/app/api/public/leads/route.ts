@@ -24,7 +24,8 @@ import {
 //   * por link: estourou o normal → o lead é GRAVADO em quarentena (status "spam"), para que
 //     um ataque ao link não bloqueie clientes de verdade; estourou o teto duro → 429
 //   * limite impossível de verificar (sem sal em produção, função fora do ar) → quarentena
-// O texto de consentimento gravado é montado AQUI (mesma função do /f); o do navegador é ignorado.
+// O texto de consentimento gravado é montado AQUI (mesma função do /f) e só para o formulário
+// hospedado; o texto enviado pelo navegador é sempre ignorado.
 
 const MAX_POR_IP_10MIN = 5;
 const MAX_POR_LINK_1MIN = 20;
@@ -146,11 +147,12 @@ export async function POST(request: Request) {
     .find(([name]) => name === VISITOR_COOKIE)?.[1];
   const visitorId = isUuid(data.oml_vid) ? data.oml_vid : isUuid(cookieVisitor) ? cookieVisitor : null;
 
+  const sourceType = link.mode === "form" ? "hosted_form" : "tracked_link";
   const { error } = await supabase.from("leads").insert({
     organization_id: link.organization_id,
     client_id: link.client_id,
     link_id: link.id,
-    source_type: link.mode === "form" ? "hosted_form" : "tracked_link",
+    source_type: sourceType,
     visitor_id: visitorId,
     name: data.name ?? null,
     email: data.email ?? null,
@@ -158,12 +160,14 @@ export async function POST(request: Request) {
     zip: data.zip ?? null,
     message: data.message ?? null,
     consent_marketing: Boolean(data.consent),
-    consent_text: data.consent ? consentText(data.lang, companyName) : null,
+    // Só gravamos como prova o texto que a pessoa VIU: no formulário hospedado (/f) é o nosso
+    // (mesma função). Vindo do site do cliente, o texto exibido lá não é verificável → null.
+    consent_text: data.consent && sourceType === "hosted_form" ? consentText(data.lang, companyName) : null,
     ip_hash: ipHash,
     // Quarentena: fica visível para a agência (status "Spam") e fora das métricas.
     status: limite.decision === "quarantine" ? "spam" : "new",
     notes: limite.decision === "quarantine" ? `Quarentena automática: ${limite.reason}. Confira e mude a etapa se for real.` : null,
-    // Sem clique encontrado, a cidade vem da geolocalização do próprio envio.
+    // Cidade do envio (geolocalização do IP). O banco usa a do clique só quando esta vier vazia.
     city: decodeGeo(headers.get("x-vercel-ip-city")),
     state: decodeGeo(headers.get("x-vercel-ip-country-region")),
   });

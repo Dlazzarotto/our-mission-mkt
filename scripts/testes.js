@@ -471,15 +471,15 @@ teste("hashIp sem sal não gera hash", () => {
   if (!/if \(!ip \|\| !salt\) return null/.test(ler("src/lib/marketing/tracking.ts"))) throw new Error("hashIp aceita sal vazio");
 });
 
-teste("consentimento: texto montado no servidor pela mesma função do /f; o do navegador é ignorado", () => {
+teste("consentimento: texto montado no servidor (só no formulário hospedado, que é o texto exibido); o do navegador é ignorado", () => {
   igual(
     rastreio.consentText("en", "Wait Happy"),
     "I agree to receive messages and offers from Wait Happy. I can opt out at any time.",
   );
   igual(rastreio.consentText("xx", ""), rastreio.consentText("en", ""), "idioma inválido cai no inglês:");
   if (!/consentText\(language, resolved\.companyName\)/.test(srcF)) throw new Error("/f não usa consentText()");
-  if (!/consent_text: data\.consent \? consentText\(data\.lang, companyName\)/.test(srcPublicLeads)) {
-    throw new Error("/api/public/leads não monta o texto no servidor");
+  if (!/consent_text: data\.consent && sourceType === "hosted_form" \? consentText\(data\.lang, companyName\)/.test(srcPublicLeads)) {
+    throw new Error("/api/public/leads não monta o texto no servidor só para o formulário hospedado");
   }
   if (/data\.consentText|consentText:\s*optionalText/.test(srcPublicLeads)) throw new Error("servidor ainda lê consentText do navegador");
   if (/consentText,\s*\n\s*website/.test(srcForm) || /\.replace\("\{company\}"/.test(srcForm)) {
@@ -897,6 +897,12 @@ console.log("\n[8] Geração — período contínuo, fuso, cotas, IA e fila");
     igual(ok({}), false, "host público sem segredo:");
     igual(ok({ url: "http://localhost:3000/x" }), true, "dev localhost sem segredo:");
     igual(ok({ url: "http://localhost:3000/x", nodeEnv: "production" }), false, "produção sem segredo:");
+  });
+  teste("IA: conteúdo final em inglês por padrão e com regras do mercado dos EUA", () => {
+    const src = lerSrc("src/lib/ai/anthropic.ts");
+    if (!/input\.language \?\? "en-US"/.test(src)) throw new Error("idioma padrão não é en-US");
+    if (/\?\? "pt-BR"/.test(src)) throw new Error("ainda cai em pt-BR");
+    for (const termo of ["LLC", "EIN", "IRS", "MEI", "CNPJ"]) if (!src.includes(termo)) throw new Error(`prompt sem ${termo}`);
   });
 }
 // <<< FIM SEÇÃO 8 — GERAÇÃO DE CAMPANHAS

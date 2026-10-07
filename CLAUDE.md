@@ -53,14 +53,15 @@ pesquisa de mercado, workflow de 10 fases e, desde out/2026, **medição e atrib
 202607270001_junction_palette_research_plans.sql
 202607270002_workflow.sql
 202607270003_logo_flag.sql
-202610060001_integridade_tenant_e_fila.sql      ← nova, ainda NÃO aplicada em produção
-202610060002_medicao_e_atribuicao.sql           ← nova, ainda NÃO aplicada em produção
-202610060003_geracao_transacional.sql           ← nova, ainda NÃO aplicada em produção
+202610060001_integridade_tenant_e_fila.sql      ← aplicada em produção em 07/out/2026
+202610060002_medicao_e_atribuicao.sql           ← aplicada em produção em 07/out/2026
+202610060003_geracao_transacional.sql           ← aplicada em produção em 07/out/2026
 ```
 
 No SQL Editor do Supabase cada arquivo roda numa transação só: se falhar, nada é aplicado e
 pode rodar de novo depois de corrigir. Aplicar UM arquivo por vez. As 5 primeiras não são
 re-executáveis (o `pnpm run audit` avisa) — isso é esperado, já estão em produção.
+As 3 de out/2026 também já estão em produção: NUNCA editar; corrigir com migration nova.
 
 ## Stack
 
@@ -105,10 +106,10 @@ Branch `fase1-medicao` (ainda NÃO está na `main`):
 
 ### PENDENTE (fazer nesta ordem)
 
-1. Aplicar as 2 migrations novas no Supabase (SQL Editor, uma por vez). A 0001 para e lista
-   registros se já houver dado cruzado entre agências — não apaga nada.
+1. ~~Aplicar as migrations 0001, 0002 e 0003 no Supabase~~ — feito em 07/out/2026, sem erro.
+   Daqui em diante qualquer correção nelas é migration NOVA.
 2. Variável `TRACKING_SALT` na Vercel (texto longo aleatório).
-3. Confirmar plano Vercel Pro (cron de hora em hora). No Hobby: voltar para `0 2 * * *`.
+3. ~~Confirmar plano Vercel~~ — é **Pro** (confirmado 07/out/2026): cron de hora em hora mantido.
 4. Merge de `fase1-medicao` na `main` → deploy.
 5. Teste real: criar link na aba Resultados → abrir no celular → preencher o formulário →
    lead deve aparecer com "origem comprovada".
@@ -158,7 +159,7 @@ Fases seguintes (aguardar aprovação do David antes de cada uma):
 ## Primeira sessão no Claude Code
 
 1. Ler este arquivo e `docs/MASTER-PROMPT-MARKETING.md`.
-2. `pnpm install` e `pnpm test` (esperado: 78 internos + 68 de banco + 17 de geração, tudo verde).
+2. `pnpm install` e `pnpm test` (esperado: 79 internos + 72 de banco + 18 de geração, tudo verde).
 3. Auditar a branch `fase1-medicao` procurando erro — sem defender o que está feito — e
    reportar achados antes de qualquer mudança.
 4. Guiar o David pela lista PENDENTE acima, um passo por vez, com comandos PowerShell prontos.

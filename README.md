@@ -319,10 +319,14 @@ fetch("https://our-mission-mkt.vercel.app/api/public/leads", {
   body: JSON.stringify({
     oml: q.get("oml"), oml_vid: q.get("oml_vid"),
     name, email, phone, zip, message,
-    consent: aceitouMarketing, consentText: "texto exato que a pessoa viu",
+    consent: aceitouMarketing,
   }),
 });
 ```
+
+Consentimento: o sistema grava `consent_marketing` (sim/não). O **texto** do consentimento só é
+guardado como prova no formulário hospedado `/f`, porque é o único texto que sabemos que a pessoa
+viu. No site do cliente, guarde a prova do texto exibido lá (ou use o formulário hospedado).
 
 Se o site não tiver como enviar, use o modo **formulário hospedado** no link.
 
@@ -345,7 +349,7 @@ Se o site não tiver como enviar, use o modo **formulário hospedado** no link.
 ### Testes
 
 ```
-pnpm test        # testes internos (78) + banco real em memória (68 + 17 da geração)
+pnpm test        # testes internos (79) + banco real em memória (72 + 18 da geração)
 pnpm test:db     # só o banco: isolamento, atribuição, funil, views, fila
 pnpm run audit   # contratos de código × schema (sem `run`, o pnpm roda outro comando)
 ```

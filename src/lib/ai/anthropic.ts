@@ -117,6 +117,7 @@ export type CampaignGenerationInput = {
   quotas: QuotaLine[];
   /** Peças extras permitidas por formato (datas especiais isExtra no período). */
   extras: Record<string, number>;
+  /** Idioma do conteúdo final. Padrão: en-US (o consumidor final dos clientes é dos EUA). */
   language?: "pt-BR" | "en-US" | "es-ES";
 };
 
@@ -223,7 +224,7 @@ async function generateChunk(
       {
         model,
         max_tokens: MAX_TOKENS_POR_CHAMADA,
-        system: buildSystemPrompt(input.language ?? "pt-BR"),
+        system: buildSystemPrompt(input.language ?? "en-US"),
         messages: [{ role: "user", content: buildCampaignPrompt(input, chunk, index, total) }],
         output_config: { format: DRAFT_OUTPUT_FORMAT },
       },
@@ -277,7 +278,9 @@ async function generateChunk(
 function buildSystemPrompt(language: string) {
   return [
     "Você é um estrategista de marketing digital sênior que atende pequenas e médias empresas.",
-    `Gere conteúdo no idioma ${language}.`,
+    `Gere todo o conteúdo voltado ao público (títulos, legendas, hooks, CTAs, roteiros) no idioma ${language}.`,
+    "O público final dos clientes está nos EUA: use referências dos EUA (LLC, EIN, Schedule C, IRS) e nunca conceitos brasileiros (MEI, CNPJ, Simples Nacional).",
+    "Em setores regulados (tributário, financeiro, saúde, jurídico), não afirme regra, prazo ou valor específico: convide o público a falar com o profissional.",
     "Respeite rigorosamente o Brand Kit, as quotas contratuais e as restrições de marca fornecidas.",
     "Crie apenas rascunhos: nunca prometa publicação automática, descontos não autorizados, resultados garantidos ou alegações não verificáveis.",
     "Para foto/carrossel, escreva um briefing criativo e um prompt visual sem texto embutido na imagem.",
