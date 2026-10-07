@@ -570,6 +570,16 @@ teste("resultados: totais vêm do banco (client_period_totals), nada somado na r
   if (/\.limit\((5000|10000)\)/.test(srcResults)) throw new Error("ainda usa .limit(5000/10000) para totais");
 });
 
+teste("rota pública fala com o público em inglês; login traduz o erro do Supabase", () => {
+  const publicas = [...srcPublicLeads.matchAll(/(?:error: |refine\([^,]+, )"([^"]+)"/g)].map((m) => m[1]);
+  if (publicas.length < 5) throw new Error("mensagens públicas não encontradas");
+  const pt = publicas.filter((msg) => /[ãõçáéíóúêâ]/i.test(msg));
+  if (pt.length) throw new Error(`mensagem pública em português: ${pt.join(" | ")}`);
+  const login = ler("src/app/login/page.tsx");
+  if (!/setError\(loginErrorMessage\(signInError\)\)/.test(login)) throw new Error("login mostra o erro cru do Supabase");
+  for (const trecho of ["E-mail ou senha incorretos.", "Sem conexão com o servidor"]) if (!login.includes(trecho)) throw new Error(`login sem: ${trecho}`);
+});
+
 teste("painel: erro ao recarregar com dados antigos aparece na tela", () => {
   if (!/\{loadError \? \(/.test(srcPainel)) throw new Error("erro de recarga some quando já há dados");
 });

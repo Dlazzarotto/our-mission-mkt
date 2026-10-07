@@ -5,6 +5,22 @@ import { FormEvent, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { AGENCY_LOGO, AGENCY_NAME } from "@/lib/brand";
 
+// Mensagem para a pessoa: o erro do Supabase vem em inglês técnico ("Invalid login
+// credentials", "Failed to fetch"); aqui vira português claro, sem expor detalhe interno.
+function loginErrorMessage(error: unknown) {
+  const raw = error instanceof Error ? error.message : "";
+  const code = (error as { code?: string } | null)?.code ?? "";
+  if (code === "invalid_credentials" || /invalid login credentials/i.test(raw)) return "E-mail ou senha incorretos.";
+  if (code === "email_not_confirmed" || /email not confirmed/i.test(raw)) {
+    return "Seu e-mail ainda não foi confirmado. Abra o link de confirmação que enviamos.";
+  }
+  if (code === "over_request_rate_limit" || /rate limit|too many/i.test(raw)) {
+    return "Muitas tentativas seguidas. Aguarde alguns minutos e tente de novo.";
+  }
+  if (/failed to fetch|network|load failed/i.test(raw)) return "Sem conexão com o servidor. Verifique a internet e tente de novo.";
+  return "Não foi possível entrar. Tente de novo em instantes.";
+}
+
 export default function LoginPage() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -23,7 +39,7 @@ export default function LoginPage() {
       if (signInError) throw signInError;
       window.location.assign("/");
     } catch (signInError) {
-      setError(signInError instanceof Error ? signInError.message : "Não foi possível entrar.");
+      setError(loginErrorMessage(signInError));
       setLoading(false);
     }
   }

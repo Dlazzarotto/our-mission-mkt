@@ -349,7 +349,7 @@ Se o site não tiver como enviar, use o modo **formulário hospedado** no link.
 ### Testes
 
 ```
-pnpm test        # testes internos (79) + banco real em memória (72 + 18 da geração)
+pnpm test        # testes internos (80) + banco real em memória (72 + 18 da geração)
 pnpm test:db     # só o banco: isolamento, atribuição, funil, views, fila
 pnpm run audit   # contratos de código × schema (sem `run`, o pnpm roda outro comando)
 ```
