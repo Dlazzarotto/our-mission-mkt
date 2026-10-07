@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pnpm test)",
+      "Bash(pnpm lint)",
+      "Bash(pnpm run audit)",
+      "Bash(npx tsc --noEmit)",
+      "Bash(node scripts/testes.js)",
+      "Bash(pnpm test:db)",
+      "Bash(node tests/db/run.mjs)",
+      "Bash(git merge-base *)",
+      "mcp__github__pull_request_read"
+    ]
+  }
+}
