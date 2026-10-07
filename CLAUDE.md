@@ -158,7 +158,7 @@ Fases seguintes (aguardar aprovação do David antes de cada uma):
 ## Primeira sessão no Claude Code
 
 1. Ler este arquivo e `docs/MASTER-PROMPT-MARKETING.md`.
-2. `pnpm install` e `pnpm test` (esperado: 78 internos + 68 de banco + 17 de geração, tudo verde).
+2. `pnpm install` e `pnpm test` (esperado: 79 internos + 72 de banco + 18 de geração, tudo verde).
 3. Auditar a branch `fase1-medicao` procurando erro — sem defender o que está feito — e
    reportar achados antes de qualquer mudança.
 4. Guiar o David pela lista PENDENTE acima, um passo por vez, com comandos PowerShell prontos.

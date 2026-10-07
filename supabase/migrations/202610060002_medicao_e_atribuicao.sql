@@ -358,6 +358,31 @@ drop trigger if exists tracking_links_before_delete on public.tracking_links;
 create trigger tracking_links_before_delete before delete on public.tracking_links
 for each row execute function public.tracking_links_before_delete();
 
+-- Link com clique não muda de peça, de slug nem de cliente: as views atribuem os cliques
+-- pela peça ATUAL do link, então trocar a peça reescreveria o histórico (os cliques de A
+-- passariam para B). Para outra peça, crie outro link. Exceção: a peça apagada zera o
+-- vínculo (SET NULL da FK), e isso é permitido.
+create or replace function public.tracking_links_lock_after_clicks()
+returns trigger
+language plpgsql
+set search_path = public
+as $$
+begin
+  if (new.slug is distinct from old.slug
+      or new.client_id is distinct from old.client_id
+      or (new.content_item_id is distinct from old.content_item_id and new.content_item_id is not null))
+     and exists (select 1 from public.link_clicks where link_id = old.id) then
+    raise exception 'Este link já tem cliques: não dá para trocar a peça, o endereço ou o cliente. Crie um link novo.'
+      using errcode = '42501';
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists tracking_links_lock_after_clicks on public.tracking_links;
+create trigger tracking_links_lock_after_clicks before update of slug, client_id, content_item_id on public.tracking_links
+for each row execute function public.tracking_links_lock_after_clicks();
+
 -- ============================================================
 -- 5. LEAD — do contato à receita
 -- ============================================================
@@ -473,6 +498,10 @@ begin
     -- Clique informado sem link: o link é o do clique (a FK confere agência/cliente/link).
     if new.click_id is not null and new.link_id is null then
       select link_id into new.link_id from public.link_clicks where id = new.click_id;
+      -- Clique inexistente não vira prova: sem link a FK não confere nada (MATCH SIMPLE).
+      if new.link_id is null then
+        new.click_id := null;
+      end if;
     end if;
 
     if new.link_id is not null then

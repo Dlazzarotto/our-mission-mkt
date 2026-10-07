@@ -50,6 +50,7 @@ export async function GET(request: Request) {
         .select("id, slug, label, mode, channel, destination_url, active, created_at, content_item_id, link_clicks(count), leads(count)", { count: "exact" })
         .eq("client_id", clientId)
         .eq("link_clicks.is_bot", false)
+        .neq("leads.status", "spam")
         .order("created_at", { ascending: false })
         .limit(100),
       supabase

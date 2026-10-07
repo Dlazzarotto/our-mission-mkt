@@ -742,6 +742,31 @@ await test("totais do período (client_period_totals): mesmas regras das views, 
   await mustFailInner(() => asAnon(d2, () => d2.query(sql, [c])));
 });
 
+await test("clique inexistente informado pelo servidor não vira prova de origem", async () => {
+  const c = await mkClient(d2, ORG_A, "Cliente fantasma");
+  const r = await one(d2, `insert into leads (organization_id, client_id, source_type, name, click_id) values ($1, $2, 'tracked_link', 'n', gen_random_uuid()) returning attribution, click_id, link_id`, [ORG_A, c]);
+  eq(`${r.attribution}|${r.click_id}|${r.link_id}`, "unknown|null|null");
+});
+
+await test("link com clique não troca de peça, slug ou cliente; peça apagada só zera o vínculo", async () => {
+  const c = await mkClient(d2, ORG_A, "Cliente trava link");
+  const k = await mkCampaign(d2, ORG_A, c);
+  const a = await mkItem(d2, ORG_A, c, k, { title: "peça A" });
+  const b = await mkItem(d2, ORG_A, c, k, { title: "peça B" });
+  const l = await mkLink(d2, c, "slugTrava1", a);
+  // Sem clique ainda: pode corrigir a peça.
+  await asUser(d2, U.ownerA, () => d2.query(`update tracking_links set content_item_id = $2 where id = $1`, [l, b]));
+  await asUser(d2, U.ownerA, () => d2.query(`update tracking_links set content_item_id = $2 where id = $1`, [l, a]));
+  await mkClick(d2, c, l, { visitor: "20000000-0000-4000-8000-0000000000e1" });
+  await mustFail("trocar a peça", () => asUser(d2, U.ownerA, () => d2.query(`update tracking_links set content_item_id = $2 where id = $1`, [l, b])), /já tem cliques/);
+  await mustFail("trocar o slug", () => asUser(d2, U.ownerA, () => d2.query(`update tracking_links set slug = 'slugTrava2' where id = $1`, [l])), /já tem cliques/);
+  // Rótulo e desativação continuam livres.
+  await asUser(d2, U.ownerA, () => d2.query(`update tracking_links set label = 'novo', active = false where id = $1`, [l]));
+  // Apagar a peça zera o vínculo (SET NULL) mesmo com clique.
+  await asUser(d2, U.ownerA, () => d2.query(`delete from content_items where id = $1`, [a]));
+  eq((await one(d2, `select content_item_id from tracking_links where id = $1`, [l])).content_item_id, null, "peça apagada:");
+});
+
 // ===========================================================================
 console.log(`\n${"=".repeat(60)}\nBanco: ${passed} passaram · ${failures.length} falharam`);
 if (failures.length > 0) {
