@@ -802,8 +802,9 @@ grant execute on function public.consume_rate_limit(text, integer, integer) to s
 -- 10. VIEWS DE RESULTADO (security_invoker: a RLS de quem consulta continua valendo)
 -- Regra de exibição: divisão por zero = NULL ("sem dado"), nunca 0 inventado.
 -- ============================================================
+drop function if exists public.client_period_totals(uuid, timestamptz);
 drop view if exists public.v_location_results, public.v_channel_results, public.v_family_results,
-                    public.v_content_scores, public.v_content_results;
+                    public.v_content_scores, public.v_content_results, public.v_metric_daily;
 
 -- MÉTRICAS DA PLATAFORMA: UMA origem por (peça, dia). A mesma métrica pode chegar pela
 -- API e ser digitada à mão no mesmo dia — somar as duas dobraria o número. Prioridade:
@@ -821,6 +822,26 @@ drop view if exists public.v_location_results, public.v_channel_results, public.
 -- lead_rate = visitantes únicos que viraram lead com clique comprovado (attribution =
 -- 'click', fora spam) ÷ tracked_clicks. Numerador ⊂ denominador: nunca passa de 100%.
 -- Leads manuais/"como nos conheceu" contam em leads, mas não na taxa de conversão do clique.
+-- Fonte única da regra "uma origem por (peça, dia)": usada por v_content_results e pelos
+-- totais do período (client_period_totals). Não duplicar essa escolha em outro lugar.
+create view public.v_metric_daily with (security_invoker = true) as
+select distinct on (pm.content_item_id, pm.metric_date)
+       pm.organization_id,
+       ci.client_id,
+       pm.content_item_id,
+       pm.metric_date,
+       pm.source,
+       pm.impressions,
+       pm.reach,
+       pm.engagement,
+       pm.clicks,
+       pm.video_views,
+       pm.watch_time_seconds,
+       pm.spend
+  from public.performance_metrics pm
+  join public.content_items ci on ci.id = pm.content_item_id
+ order by pm.content_item_id, pm.metric_date, (pm.source = 'manual'), pm.updated_at desc, pm.id;
+
 create view public.v_content_results with (security_invoker = true) as
 select
   ci.organization_id,
@@ -877,12 +898,8 @@ left join lateral (
          sum(d.video_views)::integer as video_views,
          sum(d.watch_time_seconds)::integer as watch_time_seconds,
          sum(d.spend)::numeric(14, 2) as spend
-    from (
-      select distinct on (pm.metric_date) pm.*
-        from public.performance_metrics pm
-       where pm.content_item_id = ci.id
-       order by pm.metric_date, (pm.source = 'manual'), pm.updated_at desc, pm.id
-    ) d
+    from public.v_metric_daily d
+   where d.content_item_id = ci.id
    group by d.content_item_id
 ) m on true
 left join lateral (
@@ -1077,9 +1094,86 @@ from clicks c
 full outer join lead_geo l
   on l.organization_id = c.organization_id and l.client_id = c.client_id and l.city = c.city and l.state = c.state;
 
-grant select on public.v_content_results, public.v_content_scores, public.v_family_results,
+-- TOTAIS DO PERÍODO do cliente (cards do topo da aba Resultados). O banco calcula tudo,
+-- com as mesmas regras das views: métricas = uma origem por (peça, dia) (v_metric_daily);
+-- cliques = visitantes únicos humanos; lead_rate = visitantes que viraram lead com clique
+-- comprovado ÷ cliques; spam fora; divisão por zero = NULL ("sem dado").
+-- security invoker: a RLS de quem chama vale (outra agência recebe zeros/nulos).
+create function public.client_period_totals(p_client_id uuid, p_since timestamptz)
+returns table (
+  tracked_clicks integer,
+  raw_clicks integer,
+  impressions integer,
+  spend numeric(14, 2),
+  leads integer,
+  click_leads integer,
+  qualified integer,
+  customers integer,
+  revenue numeric(14, 2),
+  attributed_share numeric,
+  lead_rate numeric,
+  conversion_rate numeric,
+  cpl numeric,
+  cpa numeric,
+  roas numeric
+)
+language sql
+stable
+security invoker
+set search_path = public
+as $$
+  with c as (
+    select count(distinct coalesce(lc.visitor_id::text, lc.ip_hash, lc.id::text)) as tracked_clicks,
+           count(*) as raw_clicks
+      from public.link_clicks lc
+     where lc.client_id = p_client_id and not lc.is_bot and lc.clicked_at >= p_since
+  ),
+  cv as (
+    select count(distinct coalesce(lc.visitor_id::text, lc.ip_hash, lc.id::text)) as converted_visitors
+      from public.leads ld
+      join public.link_clicks lc on lc.id = ld.click_id
+     where ld.client_id = p_client_id and not lc.is_bot and lc.clicked_at >= p_since
+       and ld.attribution = 'click' and ld.status <> 'spam' and ld.created_at >= p_since
+  ),
+  m as (
+    select sum(d.impressions)::integer as impressions,
+           sum(d.spend)::numeric(14, 2) as spend
+      from public.v_metric_daily d
+     where d.client_id = p_client_id and d.metric_date >= (p_since at time zone 'UTC')::date
+  ),
+  l as (
+    select count(*) as leads,
+           count(*) filter (where ld.attribution = 'click') as click_leads,
+           count(*) filter (where ld.qualified_at is not null) as qualified,
+           count(*) filter (where ld.status = 'customer') as customers,
+           sum(ld.revenue) filter (where ld.status = 'customer') as revenue
+      from public.leads ld
+     where ld.client_id = p_client_id and ld.status <> 'spam' and ld.created_at >= p_since
+  )
+  select c.tracked_clicks::integer,
+         c.raw_clicks::integer,
+         m.impressions,
+         m.spend,
+         l.leads::integer,
+         l.click_leads::integer,
+         l.qualified::integer,
+         l.customers::integer,
+         coalesce(l.revenue, 0)::numeric(14, 2),
+         round(l.click_leads::numeric / nullif(l.leads, 0), 4),
+         round(cv.converted_visitors::numeric / nullif(c.tracked_clicks, 0), 4),
+         round(l.customers::numeric / nullif(l.leads, 0), 4),
+         round(m.spend / nullif(l.leads, 0), 2),
+         round(m.spend / nullif(l.customers, 0), 2),
+         round(coalesce(l.revenue, 0) / nullif(m.spend, 0), 2)
+    from c, cv, m, l;
+$$;
+
+revoke all on function public.client_period_totals(uuid, timestamptz) from public, anon;
+grant execute on function public.client_period_totals(uuid, timestamptz) to authenticated;
+
+grant select on public.v_metric_daily, public.v_content_results, public.v_content_scores, public.v_family_results,
                 public.v_channel_results, public.v_location_results to authenticated;
-revoke all on public.v_content_results, public.v_content_scores, public.v_family_results,
+revoke all on public.v_metric_daily, public.v_content_results, public.v_content_scores, public.v_family_results,
               public.v_channel_results, public.v_location_results from anon;
 
 notify pgrst, 'reload schema';

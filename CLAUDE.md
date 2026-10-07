@@ -55,11 +55,12 @@ pesquisa de mercado, workflow de 10 fases e, desde out/2026, **medição e atrib
 202607270003_logo_flag.sql
 202610060001_integridade_tenant_e_fila.sql      ← nova, ainda NÃO aplicada em produção
 202610060002_medicao_e_atribuicao.sql           ← nova, ainda NÃO aplicada em produção
+202610060003_geracao_transacional.sql           ← nova, ainda NÃO aplicada em produção
 ```
 
 No SQL Editor do Supabase cada arquivo roda numa transação só: se falhar, nada é aplicado e
 pode rodar de novo depois de corrigir. Aplicar UM arquivo por vez. As 5 primeiras não são
-re-executáveis (o `pnpm audit` avisa) — isso é esperado, já estão em produção.
+re-executáveis (o `pnpm run audit` avisa) — isso é esperado, já estão em produção.
 
 ## Stack
 
@@ -72,8 +73,9 @@ saída estruturada (Zod) · Google Places · geração de imagem (Gemini). Geren
 ```
 pnpm install
 pnpm test        # testes internos (scripts/testes.js) + banco real em memória (tests/db, PGlite)
-pnpm test:db     # só o banco
-pnpm audit       # contratos código × schema (scripts/auditoria.py)
+pnpm test:db     # só o banco (tests/db/run.mjs + tests/db/geracao.mjs)
+pnpm run audit   # contratos código × schema (scripts/auditoria.py) — `pnpm audit` sem `run` é o
+                 # comando do pnpm que lista vulnerabilidades de pacotes, NÃO este script
 pnpm build
 ```
 
@@ -156,7 +158,7 @@ Fases seguintes (aguardar aprovação do David antes de cada uma):
 ## Primeira sessão no Claude Code
 
 1. Ler este arquivo e `docs/MASTER-PROMPT-MARKETING.md`.
-2. `pnpm install` e `pnpm test` (esperado: 32 internos + 38 de banco, tudo verde).
+2. `pnpm install` e `pnpm test` (esperado: 78 internos + 68 de banco + 17 de geração, tudo verde).
 3. Auditar a branch `fase1-medicao` procurando erro — sem defender o que está feito — e
    reportar achados antes de qualquer mudança.
 4. Guiar o David pela lista PENDENTE acima, um passo por vez, com comandos PowerShell prontos.

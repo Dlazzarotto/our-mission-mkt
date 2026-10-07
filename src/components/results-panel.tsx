@@ -112,8 +112,6 @@ type GroupRow = {
 type Results = {
   days: number;
   totals: Totals;
-  /** Avisos do servidor (ex.: total não exibido por exceder o teto de leitura). */
-  warnings: string[];
   /** Total real de cada lista (a lista mostra só as mais recentes). */
   counts: { links: number | null; leads: number | null; content: number | null };
   links: LinkRow[];
@@ -267,11 +265,6 @@ export function ResultsPanel({ clientId }: { clientId: string }) {
           Não foi possível atualizar: {loadError} Os números abaixo são da última carga bem-sucedida.
         </p>
       ) : null}
-      {data.warnings?.map((warning) => (
-        <p key={warning} role="status" className="rounded-xl border border-amber-100 bg-amber-50 px-3 py-2.5 text-xs font-semibold text-amber-800">
-          {warning}
-        </p>
-      ))}
 
       {message ? (
         <p

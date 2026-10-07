@@ -561,16 +561,13 @@ teste("atribuição: só 'click' é origem comprovada; 'link_no_click' tem rótu
   igual(dominio.attributionLabels.link_no_click, "Via link (sem clique registrado)");
   if (!/Origem comprovada/.test(dominio.attributionLabels.click)) throw new Error("rótulo de click");
   if (/comprovada/i.test(dominio.attributionLabels.link_no_click)) throw new Error("link_no_click rotulado como comprovado");
-  if (!/\.eq\("attribution", "click"\)/.test(srcResults)) throw new Error("attributedShare não conta só 'click'");
   if (!/attributionLabels\[lead\.attribution\]/.test(srcPainel)) throw new Error("tela não usa attributionLabels");
 });
 
-teste("resultados: totais sem corte silencioso (count do banco + leitura completa com aviso)", () => {
+teste("resultados: totais vêm do banco (client_period_totals), nada somado na rota", () => {
+  if (!/rpc\("client_period_totals"/.test(srcResults)) throw new Error("rota não usa client_period_totals");
+  if (/\.reduce\(/.test(srcResults)) throw new Error("rota soma valores em JS");
   if (/\.limit\((5000|10000)\)/.test(srcResults)) throw new Error("ainda usa .limit(5000/10000) para totais");
-  for (const trecho of ['periodLeads().not("qualified_at", "is", null)', 'periodLeads().eq("status", "customer")', "truncated", "warnings"]) {
-    if (!srcResults.includes(trecho)) throw new Error(`faltou ${trecho}`);
-  }
-  if (!/data\.warnings\?\.map/.test(srcPainel)) throw new Error("tela não mostra avisos de truncamento");
 });
 
 teste("painel: erro ao recarregar com dados antigos aparece na tela", () => {

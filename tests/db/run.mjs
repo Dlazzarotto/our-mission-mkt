@@ -698,6 +698,50 @@ await test("apagar o cliente com a cadeia completa (família, peça, link, cliqu
   eq((await one(d2, `select count(*)::int n from link_clicks where client_id = $1`, [s2.c2])).n, 1, "cliques do outro cliente intactos:");
 });
 
+await test("totais do período (client_period_totals): mesmas regras das views, spam fora, RLS", async () => {
+  const c = await mkClient(d2, ORG_A, "Cliente totais");
+  const k = await mkCampaign(d2, ORG_A, c);
+  const it = await mkItem(d2, ORG_A, c, k, { title: "peça T" });
+  const l = await mkLink(d2, c, "slugTot01", it);
+  // Métricas: manual + meta no mesmo dia (vale só a meta) e um dia só manual.
+  await d2.query(`insert into performance_metrics (organization_id, content_item_id, metric_date, impressions, spend, source) values
+      ($1, $2, current_date - 2, 1000, 50, 'manual'), ($1, $2, current_date - 2, 1100, 60, 'meta'),
+      ($1, $2, current_date - 1, 400, 40, 'manual')`, [ORG_A, it]);
+  // Cliques: o mesmo visitante 3x, dois visitantes por IP e um robô → 3 únicos, 5 brutos.
+  const V = "20000000-0000-4000-8000-0000000000d1";
+  for (let i = 0; i < 3; i++) await mkClick(d2, c, l, { visitor: V });
+  await mkClick(d2, c, l, { ip: "hash-t1" });
+  await mkClick(d2, c, l, { ip: "hash-t2" });
+  await mkClick(d2, c, l, { bot: true });
+  // Leads: 1 via clique (vira cliente, 1000), 2 manuais (1 qualificado), 1 spam (fora).
+  const lc = await one(d2, `insert into leads (organization_id, client_id, source_type, name, link_id, visitor_id) values ($1, $2, 'tracked_link', 'n', $3, $4) returning id, attribution`, [ORG_A, c, l, V]);
+  eq(lc.attribution, "click", "lead via clique:");
+  await d2.query(`update leads set status = 'customer', revenue = 1000 where id = $1`, [lc.id]);
+  const m1 = await one(d2, `insert into leads (organization_id, client_id, source_type, name) values ($1, $2, 'manual', 'm1') returning id`, [ORG_A, c]);
+  await d2.query(`update leads set status = 'qualified' where id = $1`, [m1.id]);
+  await d2.query(`insert into leads (organization_id, client_id, source_type, name) values ($1, $2, 'manual', 'm2')`, [ORG_A, c]);
+  const sp = await one(d2, `insert into leads (organization_id, client_id, source_type, name) values ($1, $2, 'manual', 'spam') returning id`, [ORG_A, c]);
+  await d2.query(`update leads set status = 'spam' where id = $1`, [sp.id]);
+
+  const sql = `select * from client_period_totals($1, now() - interval '30 days')`;
+  const r = await asUser(d2, U.ownerA, () => one(d2, sql, [c]));
+  const n = (v) => (v === null ? "null" : String(Number(v)));
+  eq(
+    [r.tracked_clicks, r.raw_clicks, r.impressions, n(r.spend), r.leads, r.click_leads, r.qualified, r.customers, n(r.revenue)].join("|"),
+    "3|5|1500|100|3|1|2|1|1000",
+    "totais:",
+  );
+  eq(
+    [n(r.attributed_share), n(r.lead_rate), n(r.conversion_rate), n(r.cpl), n(r.cpa), n(r.roas)].join("|"),
+    "0.3333|0.3333|0.3333|33.33|100|10",
+    "indicadores:",
+  );
+  // Outra agência: RLS zera tudo (nada vaza; indicadores sem base = null).
+  const b = await asUser(d2, U.ownerB, () => one(d2, sql, [c]));
+  eq([b.tracked_clicks, b.leads, n(b.impressions), n(b.spend), n(b.lead_rate)].join("|"), "0|0|null|null|null", "agência B:");
+  await mustFailInner(() => asAnon(d2, () => d2.query(sql, [c])));
+});
+
 // ===========================================================================
 console.log(`\n${"=".repeat(60)}\nBanco: ${passed} passaram · ${failures.length} falharam`);
 if (failures.length > 0) {
