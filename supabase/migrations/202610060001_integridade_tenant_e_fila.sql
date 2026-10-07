@@ -4,81 +4,181 @@
 -- 1. BRECHA CORRIGIDA: até aqui a RLS conferia apenas o organization_id da PRÓPRIA linha.
 --    Um editor da agência B conseguia gravar uma campanha (com organization_id = B)
 --    apontando para o client_id de um cliente da agência A. Agora toda relação entre
---    tabelas da agência é uma FK COMPOSTA (organization_id, x_id) → (organization_id, id):
---    referência cruzada vira erro do banco, inclusive para o service_role e para bugs.
--- 2. organization_id passa a ser imutável em todas as tabelas da agência.
--- 3. Jobs presos em 'processing' (worker caiu no meio) voltam para a fila após 15 min.
--- 4. performance_metrics: source nulo permitia linhas duplicadas para o mesmo dia
---    (NULL nunca colide em unique). Agora source é obrigatório ('manual' por padrão).
--- 5. Canais novos: tiktok, youtube, pinterest.
+--    tabelas da agência é uma FK COMPOSTA que inclui organization_id (e client_id quando a
+--    tabela filha tem cliente): referência cruzada vira erro do banco, inclusive para o
+--    service_role e para bugs.
+-- 2. EXATAMENTE UMA FK por par (tabela filha → tabela pai). A FK simples antiga
+--    (<tabela>_<coluna>_fkey) é TROCADA pela composta, não somada a ela: o PostgREST
+--    recusa o embed (erro PGRST201) quando existe mais de uma FK entre as mesmas tabelas.
+--    Coerência de agência + cliente fica numa FK só, ex.:
+--      content_items (organization_id, client_id, campaign_id) → campaigns (organization_id, client_id, id)
+--    O teste de banco e o scripts/auditoria.py recusam qualquer par com 2+ FKs.
+-- 3. organization_id passa a ser imutável em todas as tabelas da agência.
+-- 4. Jobs presos em 'processing' (worker caiu no meio) voltam para a fila após 15 min.
+-- 5. performance_metrics: source obrigatório e restrito à lista de origens conhecidas
+--    ('manual','meta','tiktok','youtube','linkedin','pinterest','google'); duplicatas
+--    legadas do mesmo dia/origem são deduplicadas (fica a mais recente).
+-- 6. Canais novos: tiktok, youtube, pinterest.
 --
--- Migration só-avanço: não altera arquivos já aplicados.
+-- Migration só-avanço: não altera arquivos já aplicados. Re-executável: toda constraint
+-- nova é derrubada com "if exists" antes de ser criada.
 
 -- ============================================================
--- 0. PRÉ-VERIFICAÇÃO — se já existir dado cruzado entre agências, PARA aqui
---    e lista o que precisa ser corrigido (nada é apagado automaticamente).
+-- 0. PRÉ-VERIFICAÇÃO — se já existir dado cruzado entre agências (ou entre clientes
+--    numa relação que passa a exigir o mesmo cliente), PARA aqui e lista o que precisa
+--    ser corrigido (nada é apagado automaticamente). Cobre TODAS as relações que ganham
+--    FK composta nesta migration.
 -- ============================================================
 do $$
 declare
   problemas text;
+  total integer;
 begin
-  select string_agg(problema, E'\n') into problemas from (
-    select 'brand_kits ' || b.id as problema from public.brand_kits b join public.clients c on c.id = b.client_id where c.organization_id <> b.organization_id
-    union all select 'brand_assets ' || x.id from public.brand_assets x join public.clients c on c.id = x.client_id where c.organization_id <> x.organization_id
-    union all select 'client_contracts ' || x.id from public.client_contracts x join public.clients c on c.id = x.client_id where c.organization_id <> x.organization_id
-    union all select 'campaigns ' || x.id from public.campaigns x join public.clients c on c.id = x.client_id where c.organization_id <> x.organization_id
-    union all select 'campaigns(contrato) ' || x.id from public.campaigns x join public.client_contracts k on k.id = x.contract_id where k.organization_id <> x.organization_id or k.client_id <> x.client_id
-    union all select 'content_items ' || x.id from public.content_items x join public.campaigns k on k.id = x.campaign_id where k.organization_id <> x.organization_id or k.client_id <> x.client_id
-    union all select 'generation_jobs ' || x.id from public.generation_jobs x join public.clients c on c.id = x.client_id where c.organization_id <> x.organization_id
-    union all select 'strategic_plans ' || x.id from public.strategic_plans x join public.clients c on c.id = x.client_id where c.organization_id <> x.organization_id
-    union all select 'client_workflow ' || x.id from public.client_workflow x join public.clients c on c.id = x.client_id where c.organization_id <> x.organization_id
-    union all select 'workflow_tasks ' || x.id from public.workflow_tasks x join public.clients c on c.id = x.client_id where c.organization_id <> x.organization_id
-    union all select 'market_research_requests ' || x.id from public.market_research_requests x join public.clients c on c.id = x.client_id where c.organization_id <> x.organization_id
+  select string_agg(problema, E'\n' order by problema), count(*) into problemas, total from (
+    -- filhos de clients (mesma agência)
+              select 'brand_kits ' || x.id || ' → cliente ' || x.client_id as problema from public.brand_kits x join public.clients c on c.id = x.client_id where c.organization_id <> x.organization_id
+    union all select 'brand_assets ' || x.id || ' → cliente ' || x.client_id from public.brand_assets x join public.clients c on c.id = x.client_id where c.organization_id <> x.organization_id
+    union all select 'client_contracts ' || x.id || ' → cliente ' || x.client_id from public.client_contracts x join public.clients c on c.id = x.client_id where c.organization_id <> x.organization_id
+    union all select 'campaigns ' || x.id || ' → cliente ' || x.client_id from public.campaigns x join public.clients c on c.id = x.client_id where c.organization_id <> x.organization_id
+    union all select 'content_items ' || x.id || ' → cliente ' || x.client_id from public.content_items x join public.clients c on c.id = x.client_id where c.organization_id <> x.organization_id
+    union all select 'generation_jobs ' || x.id || ' → cliente ' || x.client_id from public.generation_jobs x join public.clients c on c.id = x.client_id where c.organization_id <> x.organization_id
+    union all select 'strategic_plans ' || x.id || ' → cliente ' || x.client_id from public.strategic_plans x join public.clients c on c.id = x.client_id where c.organization_id <> x.organization_id
+    union all select 'client_workflow ' || x.id || ' → cliente ' || x.client_id from public.client_workflow x join public.clients c on c.id = x.client_id where c.organization_id <> x.organization_id
+    union all select 'workflow_tasks ' || x.id || ' → cliente ' || x.client_id from public.workflow_tasks x join public.clients c on c.id = x.client_id where c.organization_id <> x.organization_id
+    union all select 'workflow_events ' || x.id || ' → cliente ' || x.client_id from public.workflow_events x join public.clients c on c.id = x.client_id where c.organization_id <> x.organization_id
+    union all select 'market_research_requests ' || x.id || ' → cliente ' || x.client_id from public.market_research_requests x join public.clients c on c.id = x.client_id where c.organization_id <> x.organization_id
+    -- contrato ← modelo de contrato (mesma agência)
+    union all select 'client_contracts(modelo) ' || x.id || ' → modelo ' || x.template_id from public.client_contracts x join public.contract_templates t on t.id = x.template_id where t.organization_id <> x.organization_id
+    -- campanha ← contrato (mesma agência E mesmo cliente)
+    union all select 'campaigns(contrato) ' || x.id || ' → contrato ' || x.contract_id from public.campaigns x join public.client_contracts k on k.id = x.contract_id where k.organization_id <> x.organization_id or k.client_id <> x.client_id
+    -- peça ← campanha (mesma agência E mesmo cliente)
+    union all select 'content_items(campanha) ' || x.id || ' → campanha ' || x.campaign_id from public.content_items x join public.campaigns k on k.id = x.campaign_id where k.organization_id <> x.organization_id or k.client_id <> x.client_id
+    -- filhos de content_items (mesma agência)
+    union all select 'content_versions ' || x.id || ' → peça ' || x.content_item_id from public.content_versions x join public.content_items i on i.id = x.content_item_id where i.organization_id <> x.organization_id
+    union all select 'approval_events ' || x.id || ' → peça ' || x.content_item_id from public.approval_events x join public.content_items i on i.id = x.content_item_id where i.organization_id <> x.organization_id
+    union all select 'performance_metrics ' || x.id || ' → peça ' || x.content_item_id from public.performance_metrics x join public.content_items i on i.id = x.content_item_id where i.organization_id <> x.organization_id
+    -- fila de geração ← contrato / campanha (mesma agência E mesmo cliente)
+    union all select 'generation_jobs(contrato) ' || x.id || ' → contrato ' || x.contract_id from public.generation_jobs x join public.client_contracts k on k.id = x.contract_id where k.organization_id <> x.organization_id or k.client_id <> x.client_id
+    union all select 'generation_jobs(campanha) ' || x.id || ' → campanha ' || x.campaign_id from public.generation_jobs x join public.campaigns k on k.id = x.campaign_id where k.organization_id <> x.organization_id or k.client_id <> x.client_id
+    -- filhos da pesquisa de mercado (mesma agência)
+    union all select 'market_research_runs ' || x.id || ' → pesquisa ' || x.research_request_id from public.market_research_runs x join public.market_research_requests r on r.id = x.research_request_id where r.organization_id <> x.organization_id
+    union all select 'market_competitors ' || x.id || ' → pesquisa ' || x.research_request_id from public.market_competitors x join public.market_research_requests r on r.id = x.research_request_id where r.organization_id <> x.organization_id
+    union all select 'market_keywords ' || x.id || ' → pesquisa ' || x.research_request_id from public.market_keywords x join public.market_research_requests r on r.id = x.research_request_id where r.organization_id <> x.organization_id
+    union all select 'market_opportunities ' || x.id || ' → pesquisa ' || x.research_request_id from public.market_opportunities x join public.market_research_requests r on r.id = x.research_request_id where r.organization_id <> x.organization_id
   ) p;
   if problemas is not null then
-    raise exception 'Existem registros apontando para outra agência. Corrija antes de aplicar:%', E'\n' || problemas;
+    raise exception 'Existem % registro(s) apontando para outra agência (ou para outro cliente). Nada foi alterado. Corrija antes de aplicar:%',
+      total, E'\n' || problemas;
   end if;
 end $$;
 
 -- ============================================================
--- 1. CHAVES-ALVO (organization_id, id) nas tabelas referenciadas
+-- 1. Remove as FKs antigas (simples) e as compostas desta migration (re-execução).
+--    Cada uma volta abaixo como UMA FK composta por par de tabelas.
 -- ============================================================
-alter table public.clients                  add constraint clients_org_id_uq                  unique (organization_id, id);
-alter table public.contract_templates       add constraint contract_templates_org_id_uq       unique (organization_id, id);
-alter table public.client_contracts         add constraint client_contracts_org_id_uq         unique (organization_id, id);
-alter table public.campaigns                add constraint campaigns_org_id_uq                unique (organization_id, id);
-alter table public.content_items            add constraint content_items_org_id_uq            unique (organization_id, id);
-alter table public.market_research_requests add constraint market_research_requests_org_id_uq unique (organization_id, id);
--- Coerência de cliente: peça e campanha do MESMO cliente; campanha e contrato do MESMO cliente.
-alter table public.campaigns                add constraint campaigns_id_client_uq             unique (id, client_id);
-alter table public.client_contracts         add constraint client_contracts_id_client_uq      unique (id, client_id);
+alter table public.brand_kits               drop constraint if exists brand_kits_client_id_fkey,
+                                            drop constraint if exists brand_kits_client_tfk;
+alter table public.brand_assets             drop constraint if exists brand_assets_client_id_fkey,
+                                            drop constraint if exists brand_assets_client_tfk;
+alter table public.client_contracts         drop constraint if exists client_contracts_client_id_fkey,
+                                            drop constraint if exists client_contracts_template_id_fkey,
+                                            drop constraint if exists client_contracts_client_tfk,
+                                            drop constraint if exists client_contracts_template_tfk;
+alter table public.campaigns                drop constraint if exists campaigns_client_id_fkey,
+                                            drop constraint if exists campaigns_contract_id_fkey,
+                                            drop constraint if exists campaigns_client_tfk,
+                                            drop constraint if exists campaigns_contract_tfk,
+                                            drop constraint if exists campaigns_contract_client_fk;
+alter table public.content_items            drop constraint if exists content_items_campaign_id_fkey,
+                                            drop constraint if exists content_items_client_id_fkey,
+                                            drop constraint if exists content_items_client_tfk,
+                                            drop constraint if exists content_items_campaign_tfk,
+                                            drop constraint if exists content_items_campaign_client_fk;
+alter table public.content_versions         drop constraint if exists content_versions_content_item_id_fkey,
+                                            drop constraint if exists content_versions_item_tfk;
+alter table public.approval_events          drop constraint if exists approval_events_content_item_id_fkey,
+                                            drop constraint if exists approval_events_item_tfk;
+alter table public.performance_metrics      drop constraint if exists performance_metrics_content_item_id_fkey,
+                                            drop constraint if exists performance_metrics_item_tfk;
+alter table public.generation_jobs          drop constraint if exists generation_jobs_client_id_fkey,
+                                            drop constraint if exists generation_jobs_contract_id_fkey,
+                                            drop constraint if exists generation_jobs_campaign_id_fkey,
+                                            drop constraint if exists generation_jobs_client_tfk,
+                                            drop constraint if exists generation_jobs_contract_tfk,
+                                            drop constraint if exists generation_jobs_campaign_tfk;
+alter table public.market_research_requests drop constraint if exists market_research_requests_client_id_fkey,
+                                            drop constraint if exists market_research_requests_client_tfk;
+alter table public.market_research_runs     drop constraint if exists market_research_runs_research_request_id_fkey,
+                                            drop constraint if exists market_research_runs_request_tfk;
+alter table public.market_competitors       drop constraint if exists market_competitors_research_request_id_fkey,
+                                            drop constraint if exists market_competitors_request_tfk;
+alter table public.market_keywords          drop constraint if exists market_keywords_research_request_id_fkey,
+                                            drop constraint if exists market_keywords_request_tfk;
+alter table public.market_opportunities     drop constraint if exists market_opportunities_research_request_id_fkey,
+                                            drop constraint if exists market_opportunities_request_tfk;
+alter table public.strategic_plans          drop constraint if exists strategic_plans_client_id_fkey,
+                                            drop constraint if exists strategic_plans_client_tfk;
+alter table public.client_workflow          drop constraint if exists client_workflow_client_id_fkey,
+                                            drop constraint if exists client_workflow_client_tfk;
+alter table public.workflow_tasks           drop constraint if exists workflow_tasks_client_id_fkey,
+                                            drop constraint if exists workflow_tasks_client_tfk;
+alter table public.workflow_events          drop constraint if exists workflow_events_client_id_fkey,
+                                            drop constraint if exists workflow_events_client_tfk;
 
 -- O nome prometia "organização bate com o cliente", mas só verificava "não nulo".
 alter table public.brand_kits drop constraint if exists brand_kits_organization_matches_client;
 
 -- ============================================================
--- 2. FKs COMPOSTAS (mesma ação de exclusão das FKs simples já existentes)
+-- 2. CHAVES-ALVO nas tabelas referenciadas
+--    (organization_id, id)            → filhos sem client_id
+--    (organization_id, client_id, id) → filhos com client_id: agência E cliente na mesma FK
+-- ============================================================
+do $$
+declare
+  k record;
+begin
+  for k in
+    select * from (values
+      ('clients',                  'clients_org_id_uq',                  'organization_id, id'),
+      ('contract_templates',       'contract_templates_org_id_uq',       'organization_id, id'),
+      ('client_contracts',         'client_contracts_org_client_id_uq',  'organization_id, client_id, id'),
+      ('campaigns',                'campaigns_org_client_id_uq',         'organization_id, client_id, id'),
+      ('content_items',            'content_items_org_id_uq',            'organization_id, id'),
+      ('market_research_requests', 'market_research_requests_org_id_uq', 'organization_id, id')
+    ) as v(tabela, nome, colunas)
+  loop
+    if not exists (
+      select 1 from pg_constraint
+       where conrelid = format('public.%I', k.tabela)::regclass and conname = k.nome
+    ) then
+      execute format('alter table public.%I add constraint %I unique (%s)', k.tabela, k.nome, k.colunas);
+    end if;
+  end loop;
+end $$;
+
+-- ============================================================
+-- 3. FKs COMPOSTAS — uma por par (filha, pai); mesma ação de exclusão das FKs antigas
 -- ============================================================
 alter table public.brand_kits       add constraint brand_kits_client_tfk       foreign key (organization_id, client_id) references public.clients (organization_id, id) on delete cascade;
 alter table public.brand_assets     add constraint brand_assets_client_tfk     foreign key (organization_id, client_id) references public.clients (organization_id, id) on delete cascade;
 alter table public.client_contracts add constraint client_contracts_client_tfk foreign key (organization_id, client_id) references public.clients (organization_id, id) on delete cascade;
 alter table public.client_contracts add constraint client_contracts_template_tfk foreign key (organization_id, template_id) references public.contract_templates (organization_id, id) on delete set null (template_id);
 
-alter table public.campaigns add constraint campaigns_client_tfk   foreign key (organization_id, client_id)   references public.clients (organization_id, id) on delete cascade;
-alter table public.campaigns add constraint campaigns_contract_tfk foreign key (organization_id, contract_id) references public.client_contracts (organization_id, id) on delete set null (contract_id);
-alter table public.campaigns add constraint campaigns_contract_client_fk foreign key (contract_id, client_id) references public.client_contracts (id, client_id) on delete set null (contract_id);
+alter table public.campaigns add constraint campaigns_client_tfk   foreign key (organization_id, client_id) references public.clients (organization_id, id) on delete cascade;
+-- Contrato da MESMA agência e do MESMO cliente.
+alter table public.campaigns add constraint campaigns_contract_tfk foreign key (organization_id, client_id, contract_id) references public.client_contracts (organization_id, client_id, id) on delete set null (contract_id);
 
-alter table public.content_items add constraint content_items_campaign_tfk foreign key (organization_id, campaign_id) references public.campaigns (organization_id, id) on delete cascade;
-alter table public.content_items add constraint content_items_client_tfk   foreign key (organization_id, client_id)   references public.clients (organization_id, id) on delete cascade;
-alter table public.content_items add constraint content_items_campaign_client_fk foreign key (campaign_id, client_id) references public.campaigns (id, client_id) on delete cascade;
+alter table public.content_items add constraint content_items_client_tfk   foreign key (organization_id, client_id) references public.clients (organization_id, id) on delete cascade;
+-- Campanha da MESMA agência e do MESMO cliente.
+alter table public.content_items add constraint content_items_campaign_tfk foreign key (organization_id, client_id, campaign_id) references public.campaigns (organization_id, client_id, id) on delete cascade;
 
 alter table public.content_versions    add constraint content_versions_item_tfk    foreign key (organization_id, content_item_id) references public.content_items (organization_id, id) on delete cascade;
 alter table public.approval_events     add constraint approval_events_item_tfk     foreign key (organization_id, content_item_id) references public.content_items (organization_id, id) on delete cascade;
 alter table public.performance_metrics add constraint performance_metrics_item_tfk foreign key (organization_id, content_item_id) references public.content_items (organization_id, id) on delete cascade;
 
-alter table public.generation_jobs add constraint generation_jobs_client_tfk   foreign key (organization_id, client_id)   references public.clients (organization_id, id) on delete cascade;
-alter table public.generation_jobs add constraint generation_jobs_contract_tfk foreign key (organization_id, contract_id) references public.client_contracts (organization_id, id) on delete set null (contract_id);
-alter table public.generation_jobs add constraint generation_jobs_campaign_tfk foreign key (organization_id, campaign_id) references public.campaigns (organization_id, id) on delete set null (campaign_id);
+alter table public.generation_jobs add constraint generation_jobs_client_tfk   foreign key (organization_id, client_id) references public.clients (organization_id, id) on delete cascade;
+alter table public.generation_jobs add constraint generation_jobs_contract_tfk foreign key (organization_id, client_id, contract_id) references public.client_contracts (organization_id, client_id, id) on delete set null (contract_id);
+alter table public.generation_jobs add constraint generation_jobs_campaign_tfk foreign key (organization_id, client_id, campaign_id) references public.campaigns (organization_id, client_id, id) on delete set null (campaign_id);
 
 alter table public.market_research_requests add constraint market_research_requests_client_tfk foreign key (organization_id, client_id) references public.clients (organization_id, id) on delete set null (client_id);
 alter table public.market_research_runs  add constraint market_research_runs_request_tfk  foreign key (organization_id, research_request_id) references public.market_research_requests (organization_id, id) on delete cascade;
@@ -91,8 +191,14 @@ alter table public.client_workflow add constraint client_workflow_client_tfk for
 alter table public.workflow_tasks  add constraint workflow_tasks_client_tfk  foreign key (organization_id, client_id) references public.clients (organization_id, id) on delete cascade;
 alter table public.workflow_events add constraint workflow_events_client_tfk foreign key (organization_id, client_id) references public.clients (organization_id, id) on delete cascade;
 
+-- Índices de apoio para as FKs que não começam pela mesma coluna de um índice existente.
+create index if not exists content_versions_item_idx    on public.content_versions(content_item_id);
+create index if not exists approval_events_item_idx     on public.approval_events(content_item_id);
+create index if not exists generation_jobs_campaign_idx on public.generation_jobs(campaign_id) where campaign_id is not null;
+create index if not exists campaigns_contract_idx       on public.campaigns(contract_id) where contract_id is not null;
+
 -- ============================================================
--- 3. organization_id IMUTÁVEL em toda tabela da agência
+-- 4. organization_id IMUTÁVEL em toda tabela da agência
 -- ============================================================
 create or replace function public.lock_organization_id()
 returns trigger
@@ -126,7 +232,7 @@ begin
 end $$;
 
 -- ============================================================
--- 4. FILA: jobs presos em 'processing' voltam a ser elegíveis após 15 min
+-- 5. FILA: jobs presos em 'processing' voltam a ser elegíveis após 15 min
 -- ============================================================
 create or replace function public.claim_due_generation_jobs(
   worker_name text,
@@ -190,22 +296,43 @@ revoke all on function public.fail_exhausted_generation_jobs() from public, anon
 grant execute on function public.fail_exhausted_generation_jobs() to service_role;
 
 -- ============================================================
--- 5. performance_metrics: source obrigatório (unique passa a valer)
+-- 6. performance_metrics: source obrigatório e de uma lista fechada
+--    Origens válidas (a aplicação usa exatamente esta lista):
+--      'manual','meta','tiktok','youtube','linkedin','pinterest','google'
+--    Legado: lower(trim(source)); nulo, vazio ou fora da lista → 'manual'.
+--    Depois de normalizar, (peça, dia, origem) pode repetir (ex.: NULL + 'manual' no mesmo
+--    dia, ou duas NULL gravadas na mesma transação): fica só a linha mais recente.
 -- ============================================================
--- Duplicatas antigas com source nulo: mantém a mais recente de cada dia.
-delete from public.performance_metrics p
-using public.performance_metrics q
-where p.source is null and q.source is null
-  and p.content_item_id = q.content_item_id
-  and p.metric_date = q.metric_date
-  and p.created_at < q.created_at;
+alter table public.performance_metrics drop constraint if exists performance_metrics_source_check;
 
-update public.performance_metrics set source = 'manual' where source is null;
+with normalizadas as (
+  select id,
+         row_number() over (
+           partition by content_item_id, metric_date,
+             case when lower(trim(source)) in ('manual', 'meta', 'tiktok', 'youtube', 'linkedin', 'pinterest', 'google')
+                  then lower(trim(source)) else 'manual' end
+           order by created_at desc, id desc
+         ) as posicao
+    from public.performance_metrics
+)
+delete from public.performance_metrics p
+ using normalizadas n
+ where p.id = n.id and n.posicao > 1;
+
+update public.performance_metrics
+   set source = case when lower(trim(source)) in ('manual', 'meta', 'tiktok', 'youtube', 'linkedin', 'pinterest', 'google')
+                     then lower(trim(source)) else 'manual' end
+ where source is null
+    or source is distinct from (case when lower(trim(source)) in ('manual', 'meta', 'tiktok', 'youtube', 'linkedin', 'pinterest', 'google')
+                                     then lower(trim(source)) else 'manual' end);
+
 alter table public.performance_metrics alter column source set default 'manual';
 alter table public.performance_metrics alter column source set not null;
+alter table public.performance_metrics add constraint performance_metrics_source_check
+  check (source in ('manual', 'meta', 'tiktok', 'youtube', 'linkedin', 'pinterest', 'google'));
 
 -- ============================================================
--- 6. CANAIS NOVOS
+-- 7. CANAIS NOVOS
 -- ============================================================
 alter type public.content_channel add value if not exists 'tiktok';
 alter type public.content_channel add value if not exists 'youtube';
