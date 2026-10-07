@@ -20,6 +20,47 @@ pesquisa de mercado, workflow de 10 fases e, desde out/2026, **medição e atrib
 - Conteúdo para o mercado dos EUA nunca usa conceitos brasileiros (MEI, CNPJ, Simples):
   usar LLC, EIN, Schedule C, IRS. Setor regulado: não afirmar regra tributária específica.
 
+## Onde fica cada coisa
+
+- Produção: https://our-mission-mkt.vercel.app (login obrigatório; públicas só `/r/*` e `/f/*`)
+- Repositório: https://github.com/Dlazzarotto/our-mission-mkt — trabalho em andamento na branch
+  `fase1-medicao`, PR #1 aberto para a `main` (a `main` faz deploy automático na Vercel)
+- Pasta local do David: dentro do OneDrive (`C:\Users\PeaceonTax\OneDrive - Peace on Tax\Confidencial-David\...`).
+  Se precisar entregar arquivos por ZIP, o padrão confiável é extrair numa pasta temporária e
+  usar `Copy-Item` para o projeto — `Expand-Archive` direto em cima do OneDrive já falhou.
+- Master Prompt original do marketing autônomo: `docs/MASTER-PROMPT-MARKETING.md`
+  (citado abaixo como "seção N"). Ler junto com a seção "Roteiro" deste arquivo.
+
+## Variáveis de ambiente (Vercel — nunca no frontend, exceto as NEXT_PUBLIC)
+
+| Variável | Uso |
+|---|---|
+| `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` | cliente Supabase (navegador e servidor) |
+| `SUPABASE_SERVICE_ROLE_KEY` | só servidor: cron, worker, rotas públicas `/r` `/f` `/api/public/*` |
+| `ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL` | geração de campanhas e pesquisa (modelo padrão no código) |
+| `CRON_SECRET` | protege `/api/cron/*` e o worker `/api/campaigns/generate` |
+| `NEXT_PUBLIC_APP_URL` | URL base para o cron chamar o worker e para montar links `/r/` |
+| `TRACKING_SALT` | **nova** — sal do hash de IP (limite de envios). Sem ela usa `CRON_SECRET` |
+| `GOOGLE_MAPS_API_KEY` | Google Places (pesquisa de concorrentes) |
+| `GOOGLE_AI_API_KEY` | geração de imagem das peças |
+| `DATAFORSEO_*`, `GOOGLE_ADS_*`, `GOOGLE_TRENDS_API_KEY` | provedores opcionais da pesquisa de mercado |
+
+## Migrations (ordem de aplicação)
+
+```
+202607260001_initial_schema.sql
+202607260002_market_intelligence.sql
+202607270001_junction_palette_research_plans.sql
+202607270002_workflow.sql
+202607270003_logo_flag.sql
+202610060001_integridade_tenant_e_fila.sql      ← nova, ainda NÃO aplicada em produção
+202610060002_medicao_e_atribuicao.sql           ← nova, ainda NÃO aplicada em produção
+```
+
+No SQL Editor do Supabase cada arquivo roda numa transação só: se falhar, nada é aplicado e
+pode rodar de novo depois de corrigir. Aplicar UM arquivo por vez. As 5 primeiras não são
+re-executáveis (o `pnpm audit` avisa) — isso é esperado, já estão em produção.
+
 ## Stack
 
 Next.js 16 (App Router, `src/proxy.ts` como middleware) · React 19 · Tailwind 4 · Supabase
@@ -95,7 +136,7 @@ Branch `fase1-medicao` (ainda NÃO está na `main`):
 
 ## Roteiro do marketing autônomo (Master Prompt "Autonomous Marketing Operating System")
 
-O Master Prompt descreve o cérebro; a auditoria apontou o que as plataformas permitem de fato:
+Texto completo em `docs/MASTER-PROMPT-MARKETING.md`. O Master Prompt descreve o cérebro; a auditoria apontou o que as plataformas permitem de fato:
 - Atribuição de post orgânico sem clique é impossível por API → link rastreável + "como nos conheceu".
 - Desempenho por cidade por post orgânico não existe nas APIs → geo vem do clique e do lead;
   ranking por cidade de verdade só em mídia paga.
@@ -111,6 +152,15 @@ Fases seguintes (aguardar aprovação do David antes de cada uma):
   aprovação; registro de testes A/B com uma variável por vez.
 - **Fase 4** — publicação por API com os 3 níveis de autonomia (seção 22), teto de gasto e alertas.
 - Vídeo: templates (Remotion/Creatomate) + voz + legendas com fotos reais do cliente; generativo só como B-roll.
+
+## Primeira sessão no Claude Code
+
+1. Ler este arquivo e `docs/MASTER-PROMPT-MARKETING.md`.
+2. `pnpm install` e `pnpm test` (esperado: 32 internos + 38 de banco, tudo verde).
+3. Auditar a branch `fase1-medicao` procurando erro — sem defender o que está feito — e
+   reportar achados antes de qualquer mudança.
+4. Guiar o David pela lista PENDENTE acima, um passo por vez, com comandos PowerShell prontos.
+5. Só começar a Fase 2 depois da aprovação dele.
 
 ## Contexto de outros produtos do David (não são dependências)
 
