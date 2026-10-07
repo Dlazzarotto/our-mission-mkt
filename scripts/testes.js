@@ -30,25 +30,12 @@ function igual(recebido, esperado, contexto) {
 }
 
 // ---------------------------------------------------------------------------
-// 1. normalizeScheduledAt — extraída do worker real
+// 1. normalizeScheduledAt — módulo real usado pelo worker (src/lib/campaigns/period.ts)
+//    Node 22.18+ carrega TypeScript direto (só sintaxe de tipo apagável).
 // ---------------------------------------------------------------------------
-const geradorSrc = fs.readFileSync(
-  path.join(ROOT, "src/app/api/campaigns/generate/route.ts"),
-  "utf8",
-);
-const blocoNormalize = geradorSrc.match(
-  /function normalizeScheduledAt\([\s\S]*?\n\}/,
-);
-if (!blocoNormalize) {
-  falhas.push("não encontrei normalizeScheduledAt no worker");
-}
-const normalizeJs = blocoNormalize[0]
-  .replace(/:\s*string,/g, ",")
-  .replace(/:\s*number,/g, ",")
-  .replace(/,\n\s*period:\s*\{[^}]*\},/, ",\n  period,");
-const normalizeScheduledAt = eval(`(${normalizeJs})`);
-
 const periodo = { startsAt: "2026-07-27", endsAt: "2026-08-02" };
+const periodoLib = require(path.join(ROOT, "src/lib/campaigns/period.ts"));
+const normalizeScheduledAt = periodoLib.normalizeScheduledAt;
 
 console.log("\n[1] normalizeScheduledAt — datas vindas da IA");
 
@@ -104,28 +91,23 @@ teste("data legítima às 20:00 do último dia é preservada", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 2. Cadência de geração — extraída do dispatcher real
+// 2. Cadência de geração — mesma função que o dispatcher usa
 // ---------------------------------------------------------------------------
 const dispatchSrc = fs.readFileSync(
   path.join(ROOT, "src/app/api/cron/dispatch-due-work/route.ts"),
   "utf8",
 );
-const usaMensal = /generation_cadence === "monthly"/.test(dispatchSrc);
-const blocoCadencia = dispatchSrc.match(
-  /const nextDate = new Date\(contract\.next_generation_at\);[\s\S]*?\n      \} else \{[\s\S]*?\n      \}/,
-);
+const usaMensal = /generation_cadence === "monthly"/.test(dispatchSrc) && /planDispatch\(/.test(dispatchSrc);
 
 function proximaData(atual, cadencia) {
-  const contract = { next_generation_at: atual, generation_cadence: cadencia };
-  const codigo = blocoCadencia[0];
-  const fn = new Function("contract", `${codigo}\n return nextDate.toISOString();`);
-  return fn(contract);
+  // "agora" = o próprio instante agendado: sem atraso, o próximo ciclo é exatamente 1 passo.
+  return periodoLib.planDispatch(atual, cadencia, new Date(atual)).next;
 }
 
 console.log("\n[2] Cadência de geração (semanal / mensal)");
 
-teste("dispatcher diferencia cadência mensal", () => {
-  if (!usaMensal) throw new Error("dispatcher não trata generation_cadence");
+teste("dispatcher diferencia cadência mensal e usa planDispatch", () => {
+  if (!usaMensal) throw new Error("dispatcher não trata generation_cadence com planDispatch");
 });
 
 teste("semanal avança exatamente 7 dias", () => {
@@ -151,6 +133,66 @@ teste("mensal a partir de 31/mai deve cair em junho", () => {
   if (!saida.startsWith("2026-06")) {
     throw new Error(`esperava junho, recebeu ${saida}`);
   }
+});
+
+teste("mensal volta ao dia-âncora do contrato depois de fevereiro (31 → 28/fev → 31/mar)", () => {
+  const plano = periodoLib.planDispatch("2026-02-28T10:00:00.000Z", "monthly", new Date("2026-02-28T10:00:00.000Z"), 31);
+  igual(plano.next.slice(0, 10), "2026-03-31");
+});
+
+teste("cron parado 5 semanas: gera só o ciclo atual, nunca semanas passadas", () => {
+  const plano = periodoLib.planDispatch("2026-08-03T02:00:00.000Z", "weekly", new Date("2026-09-08T12:00:00.000Z"));
+  igual(plano.target.slice(0, 10), "2026-09-07", "ciclo gerado:");
+  igual(plano.next.slice(0, 10), "2026-09-14", "próximo ciclo:");
+  igual(plano.skippedCycles, 5, "ciclos pulados:");
+});
+
+// ---------------------------------------------------------------------------
+// 2b. Período e cotas por lote — antes o mensal gerava só 7 dias e a cota
+//     mensal era tratada como semanal
+// ---------------------------------------------------------------------------
+console.log("\n[2b] Período e cotas por lote");
+
+teste("período semanal = 7 dias; mensal = mês corrido inteiro", () => {
+  const semanal = periodoLib.periodFor("2026-10-05T02:00:00Z", "weekly");
+  igual(`${semanal.startsAt}..${semanal.endsAt}/${semanal.days}`, "2026-10-05..2026-10-11/7");
+  const mensal = periodoLib.periodFor("2026-10-05T02:00:00Z", "monthly");
+  igual(`${mensal.startsAt}..${mensal.endsAt}/${mensal.days}`, "2026-10-05..2026-11-04/31");
+  const fev = periodoLib.periodFor("2026-01-31T02:00:00Z", "monthly");
+  igual(fev.endsAt, "2026-02-27", "31/jan → fim antes de 28/fev:");
+});
+
+teste("regra semanal num lote mensal multiplica pelas semanas do período", () => {
+  const mensal = periodoLib.periodFor("2026-10-01T00:00:00Z", "monthly");
+  const plano = periodoLib.quotaPlan([{ channel: "instagram", format: "reel", quantity: 3, period: "week" }], mensal, "monthly");
+  igual(plano[0].quantity, 13, "3/semana em 31 dias:");
+});
+
+teste("regra mensal em lotes semanais fecha o mês exato (4 por mês)", () => {
+  const regra = [{ channel: "linkedin", format: "photo", quantity: 4, period: "month" }];
+  let feitas = 0;
+  for (const inicio of ["2026-10-01", "2026-10-08", "2026-10-15", "2026-10-22", "2026-10-29"]) {
+    const p = periodoLib.periodFor(`${inicio}T00:00:00Z`, "weekly");
+    const plano = periodoLib.quotaPlan(regra, p, "weekly", { "linkedin|photo": feitas });
+    feitas += plano[0]?.quantity ?? 0;
+  }
+  igual(feitas, 4, "total do mês:");
+});
+
+teste("excesso de peças é erro; falta é só aviso; data especial extra libera peça a mais", () => {
+  const plano = [{ channel: "instagram", format: "photo", quantity: 2, objective: "flexible" }];
+  const tres = [{ channel: "instagram", format: "photo" }, { channel: "instagram", format: "photo" }, { channel: "instagram", format: "photo" }];
+  igual(periodoLib.checkQuotas(tres, plano, {}).errors.length, 1, "3 de 2 sem extra:");
+  igual(periodoLib.checkQuotas(tres, plano, { photo: 1 }).errors.length, 0, "3 de 2 com 1 extra:");
+  const um = periodoLib.checkQuotas([tres[0]], plano, {});
+  igual(`${um.errors.length}/${um.shortfalls.length}`, "0/1", "1 de 2:");
+});
+
+teste("fallback de data espalha pelo mês inteiro no lote mensal", () => {
+  const mensal = periodoLib.periodFor("2026-10-01T00:00:00Z", "monthly");
+  const datas = new Set();
+  for (let i = 0; i < 20; i++) datas.add(normalizeScheduledAt("sem data", i, mensal).slice(0, 10));
+  if (datas.size < 20) throw new Error(`só ${datas.size} dias distintos para 20 peças`);
 });
 
 // ---------------------------------------------------------------------------
@@ -225,9 +267,11 @@ const arquivosApi = [];
   }
 })(path.join(ROOT, "src/app/api"));
 
-teste("toda rota de API valida sessão ou segredo do cron", () => {
+teste("toda rota de API valida sessão ou segredo do cron (públicas: marcadas e com limite)", () => {
   const semProtecao = arquivosApi.filter((p) => {
     const s = fs.readFileSync(p, "utf8");
+    // Rota pública só é aceita se declarada como tal E com limite de requisições.
+    if (/ROTA PÚBLICA/.test(s)) return !/rateLimit|limiteDeEnvios/.test(s);
     return !/auth\.getUser\(\)/.test(s) && !/CRON_SECRET/.test(s);
   });
   if (semProtecao.length > 0) {
@@ -267,6 +311,59 @@ teste("ANTHROPIC_API_KEY só é lida no servidor", () => {
     }
   })(path.join(ROOT, "src"));
   if (vazamentos.length > 0) throw new Error(`chave da IA em cliente: ${vazamentos.join(", ")}`);
+});
+
+// ---------------------------------------------------------------------------
+// 6. Rastreamento — link, robô, destino e indicadores (src/lib/marketing/tracking.ts)
+// ---------------------------------------------------------------------------
+console.log("\n[6] Rastreamento e atribuição");
+const rastreio = require(path.join(ROOT, "src/lib/marketing/tracking.ts"));
+
+teste("slug tem 8 caracteres válidos e não se repete em 2.000 gerações", () => {
+  const vistos = new Set();
+  for (let i = 0; i < 2000; i++) {
+    const slug = rastreio.generateSlug(8);
+    if (!rastreio.isValidSlug(slug) || slug.length !== 8) throw new Error(`slug inválido ${slug}`);
+    vistos.add(slug);
+  }
+  if (vistos.size < 2000) throw new Error(`${2000 - vistos.size} colisões`);
+});
+
+teste("prévia de link (WhatsApp, Facebook, LinkedIn) conta como robô, pessoa não", () => {
+  for (const ua of ["WhatsApp/2.23.20 A", "facebookexternalhit/1.1", "LinkedInBot/1.0", "curl/8.4.0", ""]) {
+    if (!rastreio.isBot(ua)) throw new Error(`não detectou robô: "${ua}"`);
+  }
+  const iphone = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 Instagram 330.0";
+  if (rastreio.isBot(iphone)) throw new Error("navegador do Instagram marcado como robô");
+  igual(rastreio.detectDevice(iphone), "mobile");
+  igual(rastreio.detectDevice("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/128 Safari/537.36"), "desktop");
+});
+
+teste("destino recebe UTM e oml sem sobrescrever parâmetro do próprio site", () => {
+  const url = rastreio.buildDestination(
+    "https://waithappy.com/quote?utm_source=google&ref=1",
+    { utm_source: "instagram", utm_medium: "social", utm_content: "C-00012" },
+    "AbCd2345",
+    "20000000-0000-4000-8000-0000000000f1",
+  );
+  const u = new URL(url);
+  igual(u.searchParams.get("utm_source"), "google", "não pode sobrescrever:");
+  igual(u.searchParams.get("utm_content"), "C-00012");
+  igual(u.searchParams.get("oml"), "AbCd2345");
+  igual(u.searchParams.get("ref"), "1");
+});
+
+teste("só aceita destino https sem usuário/senha embutidos", () => {
+  if (!rastreio.isSafeDestination("https://site.com/contato")) throw new Error("recusou https válido");
+  for (const ruim of ["http://site.com", "javascript:alert(1)", "https://user:pass@site.com", "https://localhost", "site.com"]) {
+    if (rastreio.isSafeDestination(ruim)) throw new Error(`aceitou ${ruim}`);
+  }
+});
+
+teste("indicador sem base é 'sem dado' (null), nunca zero", () => {
+  igual(rastreio.ratio(5, 0), null);
+  igual(rastreio.ratio(null, 10), null);
+  igual(rastreio.ratio(100, 4, 2), 25);
 });
 
 // ---------------------------------------------------------------------------

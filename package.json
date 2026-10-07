@@ -8,7 +8,9 @@
     "start": "next start",
     "lint": "eslint",
     "audit": "python3 scripts/auditoria.py",
-    "test:internal": "node scripts/testes.js"
+    "test:internal": "node scripts/testes.js",
+    "test:db": "node tests/db/run.mjs",
+    "test": "node scripts/testes.js && node tests/db/run.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.115.0",
@@ -21,6 +23,7 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "^0.5.8",
     "@tailwindcss/postcss": "^4",
     "@types/node": "^20",
     "@types/react": "^19",

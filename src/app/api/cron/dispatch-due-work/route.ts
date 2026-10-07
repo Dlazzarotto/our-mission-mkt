@@ -1,7 +1,10 @@
 import { NextResponse } from "next/server";
+import { planDispatch, type Cadence } from "@/lib/campaigns/period";
 import { createAdminClient } from "@/lib/supabase/admin";
 
-export const maxDuration = 300; // Tempo suficiente para despachar e processar um pequeno lote de jobs.
+export const maxDuration = 300; // Tempo suficiente para despachar e processar um lote de jobs.
+
+const LOTE_DE_CONTRATOS = 25;
 
 export async function GET(request: Request) {
   // Validação de segurança exigida pela Vercel para Cron Jobs.
@@ -16,29 +19,33 @@ export async function GET(request: Request) {
 
   try {
     const supabase = createAdminClient();
+    const now = new Date();
 
-    // 1. Busca contratos ativos que precisam de geração de campanha e cujo prazo já chegou.
+    // 1. Contratos ativos cujo prazo de geração já chegou.
     const { data: dueContracts, error: contractsError } = await supabase
       .from("client_contracts")
-      .select("id, client_id, organization_id, next_generation_at, generation_cadence")
+      .select("id, client_id, organization_id, next_generation_at, generation_cadence, starts_at")
       .eq("status", "active")
-      .lte("next_generation_at", new Date().toISOString())
-      .limit(10); // Processa em lotes para evitar timeout no despachante.
+      .lte("next_generation_at", now.toISOString())
+      .order("next_generation_at", { ascending: true })
+      .limit(LOTE_DE_CONTRATOS);
 
     if (contractsError) {
       throw new Error(`Erro ao buscar contratos: ${contractsError.message}`);
     }
 
-    if (!dueContracts || dueContracts.length === 0) {
-      return NextResponse.json({ success: true, dispatched: 0, message: "Nenhum contrato pendente de geração." });
-    }
-
     let dispatchedCount = 0;
+    let skippedCycles = 0;
 
-    // 2. Para cada contrato vencido, cria um job de geração na fila.
-    for (const contract of dueContracts) {
-      const idempotencyKey = `batch_${contract.id}_${new Date(contract.next_generation_at).toISOString().split("T")[0]}`;
+    // 2. Um job por contrato vencido. Se o cron ficou parado, gera só o ciclo ATUAL
+    //    (nunca conteúdo para semanas que já passaram) e agenda o próximo no futuro.
+    for (const contract of dueContracts ?? []) {
+      const cadence = (contract.generation_cadence === "monthly" ? "monthly" : "weekly") as Cadence;
+      const anchorDay = contract.starts_at ? Number(String(contract.starts_at).slice(8, 10)) : undefined;
+      const plan = planDispatch(contract.next_generation_at, cadence, now, anchorDay);
+      skippedCycles += plan.skippedCycles;
 
+      const idempotencyKey = `batch_${contract.id}_${plan.target.slice(0, 10)}`;
       const { error: jobError } = await supabase.from("generation_jobs").insert({
         organization_id: contract.organization_id,
         client_id: contract.client_id,
@@ -46,63 +53,46 @@ export async function GET(request: Request) {
         job_type: "content_batch",
         status: "queued",
         idempotency_key: idempotencyKey,
-        payload: { target_date: contract.next_generation_at },
+        payload: { target_date: plan.target, cadence, skipped_cycles: plan.skippedCycles },
       });
 
-      // Se der erro de violação de unique constraint (23505), o job já existe. Podemos ignorar e seguir.
+      // 23505 = já existe job para este ciclo (execução repetida do cron): segue normalmente.
       if (jobError && jobError.code !== "23505") {
         console.error(`Falha ao enfileirar job para contrato ${contract.id}:`, jobError);
         continue;
       }
 
-      // 3. Atualiza o contrato para a próxima data de geração,
-      // respeitando a cadência contratada (semanal ou mensal).
-      // Métodos UTC para não depender do fuso do servidor.
-      // No mensal, somar 1 mês direto estoura: 31/jan viraria 03/mar e fevereiro
-      // seria pulado. Fixamos o dia 1 antes de avancar e depois limitamos ao
-      // ultimo dia do mes de destino.
-      const nextDate = new Date(contract.next_generation_at);
-      if (contract.generation_cadence === "monthly") {
-        const diaDesejado = nextDate.getUTCDate();
-        nextDate.setUTCDate(1);
-        nextDate.setUTCMonth(nextDate.getUTCMonth() + 1);
-        const ultimoDiaDoMes = new Date(
-          Date.UTC(nextDate.getUTCFullYear(), nextDate.getUTCMonth() + 1, 0),
-        ).getUTCDate();
-        nextDate.setUTCDate(Math.min(diaDesejado, ultimoDiaDoMes));
-      } else {
-        nextDate.setUTCDate(nextDate.getUTCDate() + 7);
-      }
-
-      await supabase
+      const { error: updateError } = await supabase
         .from("client_contracts")
-        .update({ next_generation_at: nextDate.toISOString() })
+        .update({ next_generation_at: plan.next })
         .eq("id", contract.id);
+
+      if (updateError) {
+        console.error(`Falha ao avançar o contrato ${contract.id}:`, updateError);
+        continue;
+      }
 
       dispatchedCount++;
     }
 
-    // 4. Aciona o worker interno. Isso mantém o fluxo completamente automático:
-    // Cron → fila persistente → IA → rascunhos em revisão.
-    let workerResult: unknown = null;
-    if (dispatchedCount > 0) {
-      const baseUrl = process.env.NEXT_PUBLIC_APP_URL ?? new URL(request.url).origin;
-      const workerResponse = await fetch(`${baseUrl}/api/campaigns/generate`, {
-        method: "POST",
-        headers: cronSecret ? { authorization: `Bearer ${cronSecret}` } : {},
-      });
-
-      workerResult = await workerResponse.json().catch(() => ({
-        success: false,
-        error: "O worker retornou uma resposta inválida.",
-      }));
-    }
+    // 3. O worker roda SEMPRE — não só quando entra job novo. Antes, novas tentativas
+    //    de jobs com erro e o excedente da fila só andavam quando outro contrato vencia.
+    const baseUrl = process.env.NEXT_PUBLIC_APP_URL ?? new URL(request.url).origin;
+    const workerResponse = await fetch(`${baseUrl}/api/campaigns/generate`, {
+      method: "POST",
+      headers: cronSecret ? { authorization: `Bearer ${cronSecret}` } : {},
+    });
+    const workerResult: unknown = await workerResponse.json().catch(() => ({
+      success: false,
+      error: "O worker retornou uma resposta inválida.",
+    }));
 
     return NextResponse.json({
       success: true,
       dispatched: dispatchedCount,
+      skipped_cycles: skippedCycles,
       worker: workerResult,
-      message: `${dispatchedCount} jobs enfileirados com sucesso.`,
+      message: `${dispatchedCount} jobs enfileirados.`,
     });
   } catch (error) {
     console.error("Erro no despachante de cron:", error);

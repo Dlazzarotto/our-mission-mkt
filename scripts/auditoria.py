@@ -148,9 +148,17 @@ def parse_schema(sql_total):
         for col in re.finditer(r"add column (?:if not exists )?(\w+)", corpo, re.I):
             tabelas[nome].add(col.group(1))
 
+    # Views: existem para o PostgREST, mas as colunas vêm de um SELECT (não dá para
+    # extrair por regex com segurança). None = "existe; colunas conferidas pelos
+    # testes de banco em tests/db" — o auditor não acusa coluna desconhecida.
+    for m in re.finditer(r"create (?:or replace )?view public\.(\w+)", sql_total, re.I):
+        tabelas.setdefault(m.group(1), None)
+
     enums = {}
     for m in re.finditer(r"create type public\.(\w+) as enum\s*\((.*?)\);", sql_total, re.S):
         enums[m.group(1)] = set(re.findall(r"'([^']+)'", m.group(2)))
+    for m in re.finditer(r"alter type public\.(\w+) add value (?:if not exists )?'([^']+)'", sql_total, re.I):
+        enums.setdefault(m.group(1), set()).add(m.group(2))
     return tabelas, enums
 
 
@@ -176,10 +184,12 @@ def checar_sql_uso(tabelas, enums):
                 erro("SQL", f"{rel(path)} usa tabela '{tabela}' — inexistente no schema")
                 continue
             cols = tabelas[tabela]
-            # colunas em .select("a, b, c") — ignora joins tipo tabela(col)
+            if cols is None:
+                continue  # view: colunas validadas pelos testes de banco
+            # colunas em .select("a, b, c") — ignora joins tipo tabela(col) e tabela!inner(col)
             sel = re.search(r'\.select\(\s*"([^"]+)"', resto)
             if sel and sel.group(1).strip() != "*":
-                texto = re.sub(r"\w+\([^)]*\)", "", sel.group(1))
+                texto = re.sub(r"[\w!]+\([^)]*\)", "", sel.group(1))
                 for campo in texto.split(","):
                     campo = campo.strip()
                     if campo and campo != "*" and campo not in cols:
@@ -238,7 +248,8 @@ def checar_migrations(sqls):
             for rotulo, padrao in [
                 ("tabela", r"create table (?:if not exists )?public\.(\w+)"),
                 ("policy", r"create policy (\w+)"),
-                ("trigger", r"create trigger (\w+)"),
+                # Trigger é por TABELA: o mesmo nome em tabelas diferentes não é duplicata.
+                ("trigger", r"create trigger (\w+)\s+(?:before|after|instead of)[^;]*?\son\s+public\.(\w+)"),
                 ("type", r"create type public\.(\w+)"),
             ]:
                 dup = extrair(sqls[a], padrao) & extrair(sqls[b], padrao)

@@ -276,3 +276,73 @@ GOOGLE_AI_API_KEY
 ```
 Criada em **aistudio.google.com** — é **diferente** da `GOOGLE_MAPS_API_KEY`. Sem ela, os botões
 respondem que a geração não está configurada, em vez de falhar em silêncio.
+
+## Marketing autônomo — Fase 1: medição e atribuição (out/2026)
+
+Responde **qual peça gerou o lead que virou venda**, não só qual teve mais views:
+
+```
+FAMÍLIA (conceito) → PEÇA (canal/formato) → LINK RASTREÁVEL /r/<slug>
+→ CLIQUE (cidade, aparelho; robô separado) → LEAD → QUALIFICADO → CLIENTE → RECEITA
+```
+
+Tudo fica na aba **📈 Resultados** do perfil do cliente.
+
+| O quê | Como |
+|---|---|
+| Link rastreável | `/r/<slug>` grava o clique e leva ao site do cliente com UTM + `oml` (código do link) + `oml_vid` (visitante) — ou ao formulário hospedado `/f/<slug>` com a identidade do cliente |
+| Lead automático | formulário hospedado ou `POST /api/public/leads` a partir do site do cliente (ver abaixo) |
+| Lead manual | ligação, indicação, visita — com "como nos conheceu" |
+| Funil | Novo → Contatado → Qualificado → Virou cliente (com valor) / Perdido / Spam — etapas carimbadas pelo banco, histórico imutável |
+| Métricas da rede | lançamento manual por peça e dia (impressões, alcance, engajamento, cliques, views, investimento); lançar o mesmo dia de novo substitui |
+| Publicação | "Marcar como publicada" com link do post — só para peça aprovada/agendada |
+| Indicadores | CPL, CPA, ROAS, CTR, taxa de lead e de conversão **calculados por views no banco** (`v_content_results`, `v_channel_results`, `v_location_results`, `v_family_results`, `v_content_scores`). Sem base = "sem dado", nunca zero |
+| Nota S–F | relativa ao histórico do próprio cliente (90 dias), pesos: receita 35, clientes 25, qualificados 15, leads 15, CTR 5, alcance 5. Exige amostra mínima e 5+ peças medidas — senão "dados insuficientes" |
+| Família | a IA agora devolve `concept`, `hook` e `cta` por peça; peças com o mesmo conceito viram uma família (`CF-00001`), cada peça ganha código (`C-00001`), cada lead (`LD-00001`) |
+
+### Lead vindo do formulário do site do cliente
+
+O link de redirecionamento acrescenta `oml` e `oml_vid` na URL do site. Para a atribuição
+fechar, o formulário do site envia esses dois valores junto:
+
+```js
+// no site do cliente, ao enviar o formulário
+const q = new URLSearchParams(location.search);
+fetch("https://our-mission-mkt.vercel.app/api/public/leads", {
+  method: "POST",
+  headers: { "content-type": "application/json" },
+  body: JSON.stringify({
+    oml: q.get("oml"), oml_vid: q.get("oml_vid"),
+    name, email, phone, zip, message,
+    consent: aceitouMarketing, consentText: "texto exato que a pessoa viu",
+  }),
+});
+```
+
+Se o site não tiver como enviar, use o modo **formulário hospedado** no link.
+
+### Limites honestos (o que esta fase NÃO mede)
+
+- Post orgânico sem link (a pessoa vê o Reel e liga, ou pesquisa no Google) não tem como ser
+  atribuído automaticamente: registre o lead à mão com "como nos conheceu".
+- As redes não informam desempenho por cidade por post orgânico; a geografia aqui vem do
+  clique no nosso link (IP, aproximada) e da cidade do lead.
+- Métricas das redes são lançadas à mão nesta fase; integração por API vem depois
+  (Meta, TikTok e YouTube exigem aprovação de app e têm cotas).
+
+### Variáveis de ambiente novas
+
+- `TRACKING_SALT` (opcional, recomendada): sal do hash de IP usado no limite de envios.
+  Sem ela, usa `CRON_SECRET`. O IP nunca é gravado em texto.
+- O cron (`vercel.json`) passou a rodar **de hora em hora** para a fila de geração andar
+  (novas tentativas, excedente). Exige plano Vercel Pro; no Hobby, volte para `0 2 * * *`.
+
+### Testes
+
+```
+pnpm test        # testes internos (32) + banco real em memória (38)
+pnpm test:db     # só o banco: isolamento, atribuição, funil, views, fila
+pnpm audit       # contratos de código × schema
+```
+
+Os testes carregam TypeScript direto pelo Node: exige **Node 22.18+**.

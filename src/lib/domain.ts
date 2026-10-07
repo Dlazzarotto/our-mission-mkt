@@ -5,6 +5,9 @@ export const CHANNELS = [
   "linkedin",
   "email",
   "whatsapp",
+  "tiktok",
+  "youtube",
+  "pinterest",
 ] as const;
 
 export const CONTENT_FORMATS = [
@@ -189,7 +192,14 @@ export type AiCampaignDraft = {
       | "creativeBrief"
       | "imagePrompt"
       | "videoScript"
-    >
+    > & {
+      /** Conceito da família (peças com o mesmo conceito formam uma família rastreável). */
+      concept: string;
+      /** Frase de abertura (gancho) da peça — variável de teste A/B. */
+      hook: string;
+      /** Chamada para ação da peça — variável de teste A/B. */
+      cta: string;
+    }
   >;
 };
 
@@ -200,6 +210,9 @@ export const channelLabels: Record<Channel, string> = {
   linkedin: "LinkedIn",
   email: "E-mail",
   whatsapp: "WhatsApp",
+  tiktok: "TikTok",
+  youtube: "YouTube",
+  pinterest: "Pinterest",
 };
 
 export const formatLabels: Record<ContentFormat, string> = {

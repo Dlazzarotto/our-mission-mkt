@@ -1,34 +1,24 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
 import { z } from "zod";
-import type {
-  AiCampaignDraft,
-  BrandPalette,
-  Channel,
-  ClientContract,
-  ContentFormat,
-  ContentObjective,
-  VisualStyle,
+import { checkQuotas, type QuotaLine } from "@/lib/campaigns/period";
+import {
+  CHANNELS,
+  CONTENT_FORMATS,
+  CONTENT_OBJECTIVES,
+  type AiCampaignDraft,
+  type BrandPalette,
+  type Channel,
+  type ClientContract,
+  type ContentFormat,
+  type ContentObjective,
+  type VisualStyle,
 } from "@/lib/domain";
 
-const channelSchema = z.enum([
-  "instagram",
-  "facebook",
-  "google_business",
-  "linkedin",
-  "email",
-  "whatsapp",
-]);
-
-const formatSchema = z.enum(["photo", "carousel", "reel", "story", "video", "email"]);
-const objectiveSchema = z.enum([
-  "attract",
-  "educate",
-  "social_proof",
-  "convert",
-  "retain",
-  "engage",
-]);
+// Uma fonte só: os canais/formatos aceitos da IA são exatamente os do domínio (e do enum do banco).
+const channelSchema = z.enum(CHANNELS);
+const formatSchema = z.enum(CONTENT_FORMATS);
+const objectiveSchema = z.enum(CONTENT_OBJECTIVES);
 
 // Todos os campos são obrigatórios: quando não se aplicarem, a IA deve devolver string vazia.
 // Isso reduz ambiguidade, simplifica a persistência e evita schema complexo.
@@ -40,6 +30,9 @@ const campaignDraftSchema = z.object({
     .array(
       z.object({
         title: z.string().min(4).max(180),
+        concept: z.string().min(3).max(300),
+        hook: z.string().max(300),
+        cta: z.string().max(200),
         scheduledAt: z.string().min(10).max(64),
         channel: channelSchema,
         format: formatSchema,
@@ -84,13 +77,24 @@ export type CampaignGenerationInput = {
   period: {
     startsAt: string;
     endsAt: string;
+    days: number;
   };
+  /** Quantas peças cada canal/formato deve ter NESTE lote (calculado pela aplicação, não pela IA). */
+  quotas: QuotaLine[];
+  /** Peças extras permitidas por formato (datas especiais isExtra no período). */
+  extras: Record<string, number>;
   language?: "pt-BR" | "en-US" | "es-ES";
+};
+
+export type CampaignGenerationResult = {
+  draft: AiCampaignDraft;
+  /** Cotas que a IA entregou abaixo do pedido (aviso, não erro). */
+  shortfalls: string[];
 };
 
 export async function generateCampaignDraft(
   input: CampaignGenerationInput,
-): Promise<AiCampaignDraft> {
+): Promise<CampaignGenerationResult> {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   const model = process.env.ANTHROPIC_MODEL || "claude-sonnet-4-6";
 
@@ -132,9 +136,13 @@ export async function generateCampaignDraft(
     throw new Error("A IA não devolveu um rascunho estruturado válido.");
   }
 
-  validateDraftAgainstContract(draft, input.contract);
+  // Excesso de peças = erro (o job tenta de novo); falta = aviso guardado no resultado do job.
+  const { errors, shortfalls } = checkQuotas(draft.contentItems, input.quotas, input.extras);
+  if (errors.length > 0) {
+    throw new Error(`A IA excedeu a cota contratada — ${errors.join("; ")}`);
+  }
 
-  return draft;
+  return { draft, shortfalls };
 }
 
 function buildSystemPrompt(language: string) {
@@ -147,6 +155,8 @@ function buildSystemPrompt(language: string) {
     "Para reel/vídeo, inclua um roteiro claro de até 45 segundos no campo videoScript.",
     "Retorne strings vazias para imagePrompt ou videoScript quando o formato não exigir o campo.",
     "Não use termos proibidos. Inclua os termos obrigatórios somente quando forem naturais e relevantes.",
+    "Cada peça pertence a um conceito (campo concept). Peças que adaptam a mesma ideia para canais ou formatos diferentes DEVEM repetir exatamente o mesmo texto em concept — é assim que o sistema mede qual ideia gera leads.",
+    "Preencha hook (a frase de abertura da peça) e cta (a chamada para ação). Varie hooks e CTAs entre peças do mesmo conceito para que possam ser comparados.",
   ].join("\n");
 }
 
@@ -154,13 +164,6 @@ function buildCampaignPrompt(input: CampaignGenerationInput) {
   const brand = input.brandKit;
   const contract = input.contract;
 
-  const deliveryRules = contract.deliveryRules.map((rule) => ({
-    channel: rule.channel,
-    format: rule.format,
-    quantity: rule.quantity,
-    period: rule.period,
-    objective: rule.objective ?? "flexible",
-  }));
 
   const specialDates = contract.specialDateRules
     .filter((rule) => rule.enabled)
@@ -190,11 +193,11 @@ function buildCampaignPrompt(input: CampaignGenerationInput) {
         market: contract.market,
         timezone: contract.timezone,
         approvalRequired: contract.approvalRequired,
-        deliveryRules,
+        quotasForThisPeriod: input.quotas,
         specialDates,
       },
       rules: [
-        "Respeite exatamente a soma das quotas semanais e mensais aplicáveis ao período; não crie peças extras, exceto datas especiais marcadas como isExtra=true.",
+        "Crie EXATAMENTE a quantidade de peças indicada em quotasForThisPeriod para cada canal e formato — nem mais, nem menos. Peças extras só para datas especiais marcadas como isExtra=true.",
         "Caso uma data especial isExtra=false coincida com uma quota regular, ela deve substituir uma peça regular, não aumentar a entrega.",
         "Distribua as peças em datas do período e retorne scheduledAt em ISO 8601 com offset do fuso do contrato.",
         "Varie pilares e objetivos para evitar repetição.",
@@ -205,27 +208,6 @@ function buildCampaignPrompt(input: CampaignGenerationInput) {
     null,
     2,
   );
-}
-
-function validateDraftAgainstContract(
-  draft: AiCampaignDraft,
-  contract: Pick<ClientContract, "deliveryRules" | "specialDateRules">,
-) {
-  const regularRules = contract.deliveryRules.filter((rule) => rule.quantity > 0);
-
-  for (const rule of regularRules) {
-    const maxQuantity = rule.period === "week" ? rule.quantity : rule.quantity;
-    const count = draft.contentItems.filter(
-      (item) => item.channel === rule.channel && item.format === rule.format,
-    ).length;
-
-    // Para o primeiro MVP, a geração é semanal: quotas mensais são tratadas como teto por lote.
-    if (count > maxQuantity) {
-      throw new Error(
-        `A IA excedeu a quota contratada de ${rule.format} em ${rule.channel}: ${count}/${maxQuantity}.`,
-      );
-    }
-  }
 }
 
 // Exportações tipadas facilitam o uso na rota e mantêm os enums do domínio consistentes.

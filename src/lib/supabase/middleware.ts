@@ -29,7 +29,13 @@ export async function updateSession(request: NextRequest) {
   } = await supabase.auth.getUser();
 
   const pathname = request.nextUrl.pathname;
-  const isPublicPath = pathname === "/login" || pathname.startsWith("/api/");
+  // /r/<slug> = link rastreável e /f/<slug> = formulário de captação: o visitante de
+  // um post não tem login. As rotas /api/ validam sessão (ou segredo) por conta própria.
+  const isPublicPath =
+    pathname === "/login" ||
+    pathname.startsWith("/api/") ||
+    pathname.startsWith("/r/") ||
+    pathname.startsWith("/f/");
 
   if (!user && !isPublicPath) {
     const redirectUrl = request.nextUrl.clone();
