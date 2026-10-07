@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
+import { moneyInput } from "@/lib/marketing/input-schemas";
 import { createClient } from "@/lib/supabase/server";
 
 // Leads do cliente (lado da agência, com login).
@@ -16,6 +17,19 @@ const text = (max: number) =>
     .optional()
     .transform((value) => (value ? value : null));
 
+/**
+ * Campo editável: undefined (não enviado) = não mexer · null ou "" = LIMPAR · texto = gravar.
+ * Antes, "" e null viravam "não mexer" e não havia como apagar nota/motivo de perda.
+ */
+const editableText = (max: number) =>
+  z
+    .string()
+    .trim()
+    .max(max)
+    .nullable()
+    .optional()
+    .transform((value) => (value === undefined ? undefined : value ? value : null));
+
 const createSchema = z
   .object({
     clientId: z.string().uuid(),
@@ -30,16 +44,16 @@ const createSchema = z
     linkId: z.string().uuid().optional(),
     notes: text(2000),
     status: z.enum(LEAD_STATUSES).default("new"),
-    revenue: z.number().min(0).max(100_000_000).nullable().optional(),
+    revenue: moneyInput,
   })
   .refine((data) => data.name || data.email || data.phone, "Informe nome, e-mail ou telefone.");
 
 const updateSchema = z.object({
   id: z.string().uuid(),
   status: z.enum(LEAD_STATUSES).optional(),
-  revenue: z.number().min(0).max(100_000_000).nullable().optional(),
-  lostReason: text(300),
-  notes: text(2000),
+  revenue: moneyInput,
+  lostReason: editableText(300),
+  notes: editableText(2000),
 });
 
 async function sessionClient() {
@@ -116,8 +130,8 @@ export async function PATCH(request: Request) {
     const updates: Record<string, unknown> = {};
     if (payload.status !== undefined) updates.status = payload.status;
     if (payload.revenue !== undefined) updates.revenue = payload.revenue;
-    if (payload.lostReason !== null) updates.lost_reason = payload.lostReason;
-    if (payload.notes !== null) updates.notes = payload.notes;
+    if (payload.lostReason !== undefined) updates.lost_reason = payload.lostReason;
+    if (payload.notes !== undefined) updates.notes = payload.notes;
     if (Object.keys(updates).length === 0) {
       return NextResponse.json({ error: "Nenhuma alteração enviada." }, { status: 400 });
     }
@@ -127,7 +141,7 @@ export async function PATCH(request: Request) {
       .from("leads")
       .update(updates)
       .eq("id", payload.id)
-      .select("id, status, revenue, qualified_at, converted_at");
+      .select("id, status, revenue, lost_reason, notes, qualified_at, converted_at");
     if (error) return NextResponse.json({ error: error.message }, { status: 400 });
     if (!data || data.length === 0) {
       return NextResponse.json({ error: "Lead não encontrado ou sem permissão para editar." }, { status: 404 });

@@ -1,8 +1,10 @@
 "use client";
 
 import { useState } from "react";
+import type { FormLanguage } from "@/lib/marketing/tracking";
 
-export type FormLanguage = "en" | "es" | "pt";
+// O texto de consentimento vem pronto do servidor (consentText em tracking.ts) — é o MESMO
+// que o servidor grava como prova; o navegador não envia esse texto.
 
 const TEXT: Record<FormLanguage, Record<string, string>> = {
   en: {
@@ -13,7 +15,6 @@ const TEXT: Record<FormLanguage, Record<string, string>> = {
     phone: "Phone",
     zip: "ZIP code",
     message: "How can we help?",
-    consent: "I agree to receive messages and offers from {company}. I can opt out at any time.",
     submit: "Send",
     sending: "Sending...",
     needContact: "Please enter your email or phone so we can reach you.",
@@ -28,7 +29,6 @@ const TEXT: Record<FormLanguage, Record<string, string>> = {
     phone: "Teléfono",
     zip: "Código postal",
     message: "¿Cómo podemos ayudarle?",
-    consent: "Acepto recibir mensajes y ofertas de {company}. Puedo cancelar en cualquier momento.",
     submit: "Enviar",
     sending: "Enviando...",
     needContact: "Ingrese su correo o teléfono para que podamos contactarle.",
@@ -43,7 +43,6 @@ const TEXT: Record<FormLanguage, Record<string, string>> = {
     phone: "Telefone",
     zip: "CEP / ZIP",
     message: "Como podemos ajudar?",
-    consent: "Aceito receber mensagens e ofertas de {company}. Posso cancelar a qualquer momento.",
     submit: "Enviar",
     sending: "Enviando...",
     needContact: "Informe seu e-mail ou telefone para podermos falar com você.",
@@ -55,6 +54,7 @@ const TEXT: Record<FormLanguage, Record<string, string>> = {
 export function PublicLeadForm({
   slug,
   companyName,
+  consentText,
   logoUrl,
   primaryColor,
   textColor,
@@ -63,6 +63,7 @@ export function PublicLeadForm({
 }: {
   slug: string;
   companyName: string;
+  consentText: string;
   logoUrl: string | null;
   primaryColor: string;
   textColor: string;
@@ -70,7 +71,6 @@ export function PublicLeadForm({
   language: FormLanguage;
 }) {
   const t = TEXT[language];
-  const consentText = t.consent.replace("{company}", companyName || "this company");
   const [sending, setSending] = useState(false);
   const [done, setDone] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -99,7 +99,7 @@ export function PublicLeadForm({
           zip: String(form.get("zip") ?? ""),
           message: String(form.get("message") ?? ""),
           consent: form.get("consent") === "on",
-          consentText,
+          lang: language,
           website: String(form.get("website") ?? ""),
         }),
       });

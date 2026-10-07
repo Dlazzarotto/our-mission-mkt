@@ -4,6 +4,8 @@ import { createClient } from "@/lib/supabase/server";
 
 // Marca a peça como PUBLICADA, com link do post e data real.
 // Só peça aprovada/agendada pode ser publicada — rascunho não pula a aprovação.
+// Remarcar uma peça já publicada só altera o que foi ENVIADO: permalink, ID do post e
+// data que já estavam gravados nunca são apagados por um envio sem esses campos.
 
 const requestSchema = z.object({
   contentItemId: z.string().uuid(),
@@ -32,7 +34,7 @@ export async function PATCH(request: Request) {
 
     const { data: item } = await supabase
       .from("content_items")
-      .select("id, status")
+      .select("id, status, published_at")
       .eq("id", payload.contentItemId)
       .maybeSingle();
     if (!item) return NextResponse.json({ error: "Peça não encontrada ou sem permissão." }, { status: 404 });
@@ -40,19 +42,22 @@ export async function PATCH(request: Request) {
       return NextResponse.json({ error: "A peça precisa estar aprovada antes de ser marcada como publicada." }, { status: 409 });
     }
 
-    const publishedAt = payload.publishedAt ? new Date(payload.publishedAt) : new Date();
+    const publishedAt = payload.publishedAt
+      ? new Date(payload.publishedAt)
+      : item.status === "published" && item.published_at
+        ? new Date(item.published_at)
+        : new Date();
     if (publishedAt.getTime() > Date.now() + 5 * 60 * 1000) {
       return NextResponse.json({ error: "Data de publicação no futuro: use o agendamento." }, { status: 400 });
     }
 
+    const updates: Record<string, unknown> = { status: "published", published_at: publishedAt.toISOString() };
+    if (payload.permalink) updates.permalink = payload.permalink;
+    if (payload.externalPostId) updates.external_post_id = payload.externalPostId;
+
     const { data, error } = await supabase
       .from("content_items")
-      .update({
-        status: "published",
-        published_at: publishedAt.toISOString(),
-        permalink: payload.permalink,
-        external_post_id: payload.externalPostId || null,
-      })
+      .update(updates)
       .eq("id", item.id)
       .select("id, status, published_at, permalink, public_code");
     if (error) return NextResponse.json({ error: error.message }, { status: 400 });

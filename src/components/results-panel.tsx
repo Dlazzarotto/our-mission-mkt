@@ -2,7 +2,17 @@
 
 import { Check, Copy, LoaderCircle, Plus, RefreshCw } from "lucide-react";
 import { useEffect, useState } from "react";
-import { CHANNELS, channelLabels, type Channel } from "@/lib/domain";
+import {
+  CHANNELS,
+  METRIC_SOURCES,
+  attributionLabels,
+  channelLabels,
+  metricSourceLabels,
+  type Channel,
+  type LeadAttribution,
+  type MetricSource,
+} from "@/lib/domain";
+import { parseCount, parseMoney } from "@/lib/marketing/tracking";
 
 // ============================================================
 // Resultados do cliente — Fase 1 do marketing autônomo (medição e atribuição).
@@ -49,7 +59,7 @@ type LeadRow = {
   state: string | null;
   status: LeadStatus;
   revenue: number | null;
-  attribution: "click" | "self_reported" | "unknown";
+  attribution: LeadAttribution;
   self_reported_source: string | null;
   channel: Channel | null;
   source_type: string;
@@ -102,6 +112,10 @@ type GroupRow = {
 type Results = {
   days: number;
   totals: Totals;
+  /** Avisos do servidor (ex.: total não exibido por exceder o teto de leitura). */
+  warnings: string[];
+  /** Total real de cada lista (a lista mostra só as mais recentes). */
+  counts: { links: number | null; leads: number | null; content: number | null };
   links: LinkRow[];
   leads: LeadRow[];
   content: ContentRow[];
@@ -119,12 +133,6 @@ const LEAD_STATUS_LABEL: Record<LeadStatus, string> = {
   customer: "Virou cliente",
   lost: "Perdido",
   spam: "Spam",
-};
-
-const ATTRIBUTION_LABEL: Record<LeadRow["attribution"], string> = {
-  click: "Origem comprovada (link)",
-  self_reported: "Origem informada",
-  unknown: "Origem desconhecida",
 };
 
 const TIER_STYLE: Record<string, string> = {
@@ -147,6 +155,10 @@ function fmtInt(value: number | null | undefined) {
 }
 function fmtPct(value: number | null | undefined) {
   return value === null || value === undefined ? "sem dado" : `${(Number(value) * 100).toFixed(1)}%`;
+}
+/** "100 mais recentes de 340" quando a lista não mostra tudo. */
+function shown(listed: number, total: number | null | undefined) {
+  return total !== null && total !== undefined && total > listed ? `${listed} mais recentes de ${integer.format(total)}` : String(listed);
 }
 function fmtRoas(value: number | null | undefined) {
   return value === null || value === undefined ? "sem dado" : `${Number(value).toFixed(2)}×`;
@@ -249,6 +261,17 @@ export function ResultsPanel({ clientId }: { clientId: string }) {
           </button>
         </div>
       </div>
+
+      {loadError ? (
+        <p role="alert" className="rounded-xl border border-rose-100 bg-rose-50 px-3 py-2.5 text-xs font-semibold text-rose-700">
+          Não foi possível atualizar: {loadError} Os números abaixo são da última carga bem-sucedida.
+        </p>
+      ) : null}
+      {data.warnings?.map((warning) => (
+        <p key={warning} role="status" className="rounded-xl border border-amber-100 bg-amber-50 px-3 py-2.5 text-xs font-semibold text-amber-800">
+          {warning}
+        </p>
+      ))}
 
       {message ? (
         <p
@@ -359,7 +382,7 @@ function LinksSection({ data, clientId, act }: { data: Results; clientId: string
   return (
     <div className={card}>
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <h4 className="text-sm font-bold text-slate-950">Links rastreáveis ({data.links.length})</h4>
+        <h4 className="text-sm font-bold text-slate-950">Links rastreáveis ({shown(data.links.length, data.counts?.links)})</h4>
         <button onClick={() => setOpen(!open)} className={buttonGhost}>
           <Plus className="h-3.5 w-3.5" /> Novo link
         </button>
@@ -474,15 +497,20 @@ function LeadsSection({ data, clientId, act }: { data: Results; clientId: string
   }
 
   function saveRevenue(lead: LeadRow) {
-    const raw = (revenueDraft[lead.id] ?? "").replace(/[^0-9.]/g, "");
+    const raw = (revenueDraft[lead.id] ?? "").trim();
     if (raw === "") return;
-    act(() => send("/api/leads", "PATCH", { id: lead.id, revenue: Number(raw) }), "Valor registrado.");
+    // Mesmo parser do servidor: "1.500,00", "1,500.00" e "1500" valem 1500.
+    const revenue = parseMoney(raw);
+    act(async () => {
+      if (revenue === null) throw new Error(`Valor inválido: "${raw}". Use 1500, 1500.50, 1,500.50 ou 1.500,50.`);
+      return send("/api/leads", "PATCH", { id: lead.id, revenue });
+    }, revenue === null ? "" : `Valor registrado: ${money.format(revenue)}.`);
   }
 
   return (
     <div className={card}>
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <h4 className="text-sm font-bold text-slate-950">Leads ({data.leads.length})</h4>
+        <h4 className="text-sm font-bold text-slate-950">Leads ({shown(data.leads.length, data.counts?.leads)})</h4>
         <button onClick={() => setOpen(!open)} className={buttonGhost}>
           <Plus className="h-3.5 w-3.5" /> Registrar lead
         </button>
@@ -537,7 +565,7 @@ function LeadsSection({ data, clientId, act }: { data: Results; clientId: string
                   {new Date(lead.created_at).toLocaleDateString("pt-BR")}
                 </p>
                 <p className="truncate text-xs text-slate-400">
-                  {ATTRIBUTION_LABEL[lead.attribution]}
+                  {attributionLabels[lead.attribution] ?? lead.attribution}
                   {lead.content_items ? ` · ${lead.content_items.public_code} ${lead.content_items.title}` : ""}
                   {lead.self_reported_source ? ` · "${lead.self_reported_source}"` : ""}
                   {lead.channel ? ` · ${channelLabels[lead.channel] ?? lead.channel}` : ""}
@@ -587,34 +615,34 @@ function ContentSection({ data, act }: { data: Results; act: Act }) {
   const [openId, setOpenId] = useState<string | null>(null);
   const [mode, setMode] = useState<"metrics" | "publish">("metrics");
   const today = new Date().toISOString().slice(0, 10);
-  const [metric, setMetric] = useState({ metricDate: today, impressions: "", reach: "", engagement: "", clicks: "", videoViews: "", spend: "" });
+  const emptyMetric = { metricDate: today, source: "manual" as MetricSource, impressions: "", reach: "", engagement: "", clicks: "", videoViews: "", spend: "" };
+  const [metric, setMetric] = useState(emptyMetric);
   const [publish, setPublish] = useState({ permalink: "", publishedAt: "" });
 
-  function num(value: string) {
-    const clean = value.replace(/[^0-9.]/g, "");
-    return clean === "" ? null : Number(clean);
+  /** Vazio = sem dado (null). Texto que não é número vira erro na tela, nunca um número errado. */
+  function readNumber(label: string, value: string, parse: (input: string) => number | null) {
+    if (value.trim() === "") return null;
+    const parsed = parse(value);
+    if (parsed === null) throw new Error(`${label}: "${value}" não é um número válido.`);
+    return parsed;
   }
 
   async function saveMetrics(contentItemId: string) {
-    const ok = await act(
-      () =>
-        send("/api/metrics", "POST", {
-          rows: [
-            {
-              contentItemId,
-              metricDate: metric.metricDate,
-              impressions: num(metric.impressions),
-              reach: num(metric.reach),
-              engagement: num(metric.engagement),
-              clicks: num(metric.clicks),
-              videoViews: num(metric.videoViews),
-              spend: num(metric.spend),
-            },
-          ],
-        }),
-      "Métricas do dia gravadas (lançar o mesmo dia de novo substitui).",
-    );
-    if (ok) setMetric({ metricDate: today, impressions: "", reach: "", engagement: "", clicks: "", videoViews: "", spend: "" });
+    const ok = await act(async () => {
+      const row = {
+        contentItemId,
+        metricDate: metric.metricDate,
+        source: metric.source,
+        impressions: readNumber("Impressões", metric.impressions, parseCount),
+        reach: readNumber("Alcance", metric.reach, parseCount),
+        engagement: readNumber("Engajamento", metric.engagement, parseCount),
+        clicks: readNumber("Cliques", metric.clicks, parseCount),
+        videoViews: readNumber("Visualizações", metric.videoViews, parseCount),
+        spend: readNumber("Investimento", metric.spend, parseMoney),
+      };
+      return send("/api/metrics", "POST", { rows: [row] });
+    }, "Métricas do dia gravadas (lançar o mesmo dia e origem de novo substitui).");
+    if (ok) setMetric(emptyMetric);
   }
 
   async function markPublished(contentItemId: string) {
@@ -635,7 +663,7 @@ function ContentSection({ data, act }: { data: Results; act: Act }) {
 
   return (
     <div className={card}>
-      <h4 className="text-sm font-bold text-slate-950">Desempenho por peça</h4>
+      <h4 className="text-sm font-bold text-slate-950">Desempenho por peça ({shown(data.content.length, data.counts?.content)})</h4>
       <p className="mt-1 text-xs text-slate-500">
         Nota (S a F) compara a peça com o histórico do próprio cliente nos últimos 90 dias, com peso maior para receita,
         clientes e leads qualificados. Abaixo de 5 peças medidas, ou com pouco dado, aparece &quot;dados insuficientes&quot;.
@@ -711,6 +739,16 @@ function ContentSection({ data, act }: { data: Results; act: Act }) {
                   <label className="text-xs font-bold text-slate-600">
                     Dia
                     <input type="date" max={today} className={input} value={metric.metricDate} onChange={(e) => setMetric({ ...metric, metricDate: e.target.value })} />
+                  </label>
+                  <label className="text-xs font-bold text-slate-600">
+                    Origem
+                    <select className={input} value={metric.source} onChange={(e) => setMetric({ ...metric, source: e.target.value as MetricSource })}>
+                      {METRIC_SOURCES.map((source) => (
+                        <option key={source} value={source}>
+                          {metricSourceLabels[source]}
+                        </option>
+                      ))}
+                    </select>
                   </label>
                   {(
                     [

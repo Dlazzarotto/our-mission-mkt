@@ -1,5 +1,8 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
+import { METRIC_SOURCES } from "@/lib/domain";
+import { countInput, moneyInput } from "@/lib/marketing/input-schemas";
+import { dedupeBy } from "@/lib/marketing/tracking";
 import { createClient } from "@/lib/supabase/server";
 
 // Métricas da plataforma por peça e por dia (Fase 1: lançamento manual ou colado do
@@ -7,8 +10,11 @@ import { createClient } from "@/lib/supabase/server";
 // nunca duplica. Quando as integrações por API vierem, gravam aqui com source = rede.
 // Lead NÃO entra aqui: lead é pessoa, registrado em "leads" (com origem e funil),
 // para que receita e conversão sejam rastreáveis até a peça.
+// source: exatamente a lista do CHECK do banco (METRIC_SOURCES). A mesma peça+dia+origem
+// repetida no MESMO envio é deduplicada antes do upsert (a última linha vence) — o Postgres
+// recusaria o lote inteiro ("ON CONFLICT DO UPDATE command cannot affect row a second time").
 
-const count = z.number().int().min(0).max(2_000_000_000).nullable().optional();
+const count = countInput;
 
 const rowSchema = z.object({
   contentItemId: z.string().uuid(),
@@ -21,15 +27,16 @@ const rowSchema = z.object({
   watchTimeSeconds: count,
   saves: count,
   shares: count,
-  spend: z.number().min(0).max(10_000_000).nullable().optional(),
-  source: z.string().trim().min(2).max(40).default("manual"),
+  spend: moneyInput.refine((value) => value === undefined || value === null || value <= 10_000_000, "Investimento acima do limite."),
+  source: z.enum(METRIC_SOURCES).default("manual"),
 });
 
 const requestSchema = z.object({ rows: z.array(rowSchema).min(1).max(500) });
 
 export async function POST(request: Request) {
   try {
-    const { rows } = requestSchema.parse(await request.json());
+    const parsed = requestSchema.parse(await request.json());
+    const rows = dedupeBy(parsed.rows, (row) => `${row.contentItemId}|${row.metricDate}|${row.source}`);
     const supabase = await createClient();
     const {
       data: { user },
@@ -87,7 +94,7 @@ export async function POST(request: Request) {
     if (!data || data.length !== rows.length) {
       return NextResponse.json({ error: "Nem todas as linhas foram gravadas (sem permissão?)." }, { status: 403 });
     }
-    return NextResponse.json({ success: true, saved: data.length });
+    return NextResponse.json({ success: true, saved: data.length, duplicatesMerged: parsed.rows.length - rows.length });
   } catch (error) {
     if (error instanceof z.ZodError) {
       return NextResponse.json({ error: error.issues[0]?.message ?? "Dados inválidos." }, { status: 400 });

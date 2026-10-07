@@ -1,11 +1,13 @@
 import type { Metadata } from "next";
-import { createAdminClient } from "@/lib/supabase/admin";
-import { isValidSlug } from "@/lib/marketing/tracking";
-import { PublicLeadForm, type FormLanguage } from "@/components/public-lead-form";
+import { loadPublicLink } from "@/lib/marketing/public-link";
+import { consentText, formLanguage } from "@/lib/marketing/tracking";
+import { PublicLeadForm } from "@/components/public-lead-form";
 
-// Formulário de captação hospedado: /f/<slug>
+// ROTA PÚBLICA — formulário de captação hospedado: /f/<slug>
 // Página pública (o visitante não tem login) com a identidade visual DO CLIENTE.
 // Só exibe nome, cores e logo do cliente — nenhum outro dado sai daqui.
+// Só LEITURA: não grava nada. O envio vai para /api/public/leads, que tem o limite de envios.
+// Link ou cliente inativo = formulário indisponível.
 
 export const dynamic = "force-dynamic";
 
@@ -31,30 +33,22 @@ export default async function HostedFormPage({
 }) {
   const { slug } = await params;
   const { lang } = await searchParams;
-  const language: FormLanguage = lang === "pt" || lang === "es" ? lang : "en";
+  const language = formLanguage(lang);
 
-  const supabase = createAdminClient();
-  const { data: link } = isValidSlug(slug)
-    ? await supabase
-        .from("tracking_links")
-        .select("id, slug, client_id, active, expires_at, label")
-        .eq("slug", slug)
-        .maybeSingle()
-    : { data: null };
+  const resolved = await loadPublicLink(slug);
 
-  const available = Boolean(link && link.active && !(link.expires_at && new Date(link.expires_at) < new Date()));
-
-  let companyName = "";
   let palette: Palette = {};
   let logoUrl: string | null = null;
   let preferredCta: string | null = null;
 
-  if (available && link) {
-    const [{ data: client }, { data: brandKit }] = await Promise.all([
-      supabase.from("clients").select("company_name").eq("id", link.client_id).maybeSingle(),
-      supabase.from("brand_kits").select("palette, logo_path, preferred_cta").eq("client_id", link.client_id).maybeSingle(),
-    ]);
-    companyName = client?.company_name ?? "";
+  if (resolved.status === "ok") {
+    const { supabase, link } = resolved;
+    const { data: brandKit, error } = await supabase
+      .from("brand_kits")
+      .select("palette, logo_path, preferred_cta")
+      .eq("client_id", link.client_id)
+      .maybeSingle();
+    if (error) console.error(`Falha ao ler a marca do link ${slug}:`, error.message);
     palette = (brandKit?.palette as Palette | null) ?? {};
     preferredCta = brandKit?.preferred_cta ?? null;
     if (brandKit?.logo_path) {
@@ -75,10 +69,11 @@ export default async function HostedFormPage({
       style={{ backgroundColor: colors.background, color: colors.text }}
     >
       <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-sm ring-1 ring-black/5 sm:p-8">
-        {available && link ? (
+        {resolved.status === "ok" ? (
           <PublicLeadForm
-            slug={link.slug}
-            companyName={companyName}
+            slug={resolved.link.slug}
+            companyName={resolved.companyName}
+            consentText={consentText(language, resolved.companyName)}
             logoUrl={logoUrl}
             primaryColor={colors.primary}
             textColor={colors.text}
@@ -86,7 +81,11 @@ export default async function HostedFormPage({
             language={language}
           />
         ) : (
-          <p className="py-10 text-center text-lg font-semibold">This form is no longer available.</p>
+          <p className="py-10 text-center text-lg font-semibold">
+            {resolved.status === "error"
+              ? "This form is temporarily unavailable. Please try again in a few minutes."
+              : "This form is no longer available."}
+          </p>
         )}
       </div>
     </main>

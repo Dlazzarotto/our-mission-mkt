@@ -10,6 +10,16 @@ export const CHANNELS = [
   "pinterest",
 ] as const;
 
+/** Origem de uma linha de performance_metrics — espelha o CHECK do banco (mesma lista). */
+export const METRIC_SOURCES = ["manual", "meta", "tiktok", "youtube", "linkedin", "pinterest", "google"] as const;
+
+/**
+ * Origem do lead (leads.attribution, calculada pelo banco):
+ * click = clique comprovado no link · link_no_click = veio por link sem clique registrado ·
+ * self_reported = "como nos conheceu" · unknown = sem origem.
+ */
+export const LEAD_ATTRIBUTIONS = ["click", "link_no_click", "self_reported", "unknown"] as const;
+
 export const CONTENT_FORMATS = [
   "photo",
   "carousel",
@@ -50,6 +60,8 @@ export const CONTENT_OBJECTIVES = [
 ] as const;
 
 export type Channel = (typeof CHANNELS)[number];
+export type MetricSource = (typeof METRIC_SOURCES)[number];
+export type LeadAttribution = (typeof LEAD_ATTRIBUTIONS)[number];
 export type ContentFormat = (typeof CONTENT_FORMATS)[number];
 export type ContentStatus = (typeof CONTENT_STATUSES)[number];
 export type VisualStyle = (typeof VISUAL_STYLES)[number];
@@ -213,6 +225,24 @@ export const channelLabels: Record<Channel, string> = {
   tiktok: "TikTok",
   youtube: "YouTube",
   pinterest: "Pinterest",
+};
+
+export const metricSourceLabels: Record<MetricSource, string> = {
+  manual: "Lançamento manual",
+  meta: "Meta (Facebook / Instagram)",
+  tiktok: "TikTok",
+  youtube: "YouTube",
+  linkedin: "LinkedIn",
+  pinterest: "Pinterest",
+  google: "Google",
+};
+
+/** Só "click" é origem comprovada; o resto nunca entra como prova. */
+export const attributionLabels: Record<LeadAttribution, string> = {
+  click: "Origem comprovada (clique no link)",
+  link_no_click: "Via link (sem clique registrado)",
+  self_reported: "Origem informada",
+  unknown: "Origem desconhecida",
 };
 
 export const formatLabels: Record<ContentFormat, string> = {
