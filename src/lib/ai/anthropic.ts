@@ -1,7 +1,15 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
 import { z } from "zod";
-import { checkQuotas, type QuotaLine } from "@/lib/campaigns/period";
+import { DRAFT_LIMITS, MAX_HASHTAGS, sanitizeDraft, type DraftItem } from "@/lib/campaigns/draft";
+import {
+  applyQuotaWindows,
+  checkQuotas,
+  enforceQuotas,
+  normalizeScheduledAt,
+  splitQuotaPlan,
+  type QuotaLine,
+} from "@/lib/campaigns/period";
 import {
   CHANNELS,
   CONTENT_FORMATS,
@@ -15,39 +23,65 @@ import {
   type VisualStyle,
 } from "@/lib/domain";
 
-// Uma fonte só: os canais/formatos aceitos da IA são exatamente os do domínio (e do enum do banco).
+// ------------------------------------------------------------------
+// Orçamento de cada chamada à IA.
+//
+// Antes: uma chamada só, max_tokens 7000 (um lote mensal de ~17 peças passa
+// disso), timeout 90s × 3 tentativas ≈ 275s contra uma função de 300s.
+// Agora: o lote é dividido em pedaços de até ITENS_POR_CHAMADA peças, chamados em
+// paralelo com streaming (sem limite de tempo HTTP por resposta longa), e TODAS as
+// chamadas obedecem a um prazo absoluto (`deadlineMs`) recebido do worker.
+// ------------------------------------------------------------------
+const ITENS_POR_CHAMADA = 6;
+const CHAMADAS_PARALELAS = 5;
+// Pior caso por peça ≈ 2.500 tokens (legenda 3.000 + briefing 1.800 + prompt 1.800 + roteiro 2.500
+// caracteres). 6 peças ≈ 15k; folga para o JSON e o resumo.
+const MAX_TOKENS_POR_CHAMADA = 24_000;
+// Menos que isso de prazo não vale começar a chamada: ela seria abortada no meio.
+const PRAZO_MINIMO_MS = 25_000;
+
 const channelSchema = z.enum(CHANNELS);
 const formatSchema = z.enum(CONTENT_FORMATS);
 const objectiveSchema = z.enum(CONTENT_OBJECTIVES);
 
-// Todos os campos são obrigatórios: quando não se aplicarem, a IA deve devolver string vazia.
-// Isso reduz ambiguidade, simplifica a persistência e evita schema complexo.
-const campaignDraftSchema = z.object({
-  campaignName: z.string().min(3).max(120),
-  campaignGoal: z.string().min(10).max(420),
-  summary: z.string().min(20).max(1000),
+const L = DRAFT_LIMITS;
+const text = ([min, max]: readonly [number, number]) => z.string().min(min).max(max);
+
+// Schema enviado à API (structured outputs). Os limites de tamanho viram apenas
+// descrição para o modelo — NÃO são garantidos. A validação real é sanitizeDraft
+// (src/lib/campaigns/draft.ts), que corta em vez de derrubar o lote.
+const campaignDraftWireSchema = z.object({
+  campaignName: text(L.campaignName),
+  campaignGoal: text(L.campaignGoal),
+  summary: text(L.summary),
   contentItems: z
     .array(
       z.object({
-        title: z.string().min(4).max(180),
-        concept: z.string().min(3).max(300),
-        hook: z.string().max(300),
-        cta: z.string().max(200),
-        scheduledAt: z.string().min(10).max(64),
+        title: text(L.title),
+        concept: text(L.concept),
+        hook: text(L.hook),
+        cta: text(L.cta),
+        scheduledAt: text(L.scheduledAt),
         channel: channelSchema,
         format: formatSchema,
         objective: objectiveSchema,
-        pillar: z.string().min(3).max(80),
-        caption: z.string().min(20).max(3000),
-        hashtags: z.array(z.string().min(2).max(80)).max(25),
-        creativeBrief: z.string().min(20).max(1800),
-        imagePrompt: z.string().max(1800),
-        videoScript: z.string().max(2500),
+        pillar: text(L.pillar),
+        caption: text(L.caption),
+        hashtags: z.array(text(L.hashtag)).max(MAX_HASHTAGS),
+        creativeBrief: text(L.creativeBrief),
+        imagePrompt: text(L.imagePrompt),
+        videoScript: text(L.videoScript),
       }),
     )
-    .min(1)
-    .max(40),
+    .min(1),
 });
+
+// Só o JSON Schema: sem o `parse` automático do SDK, que lançava erro de parse ANTES
+// de o código olhar stop_reason (refusal/max_tokens nunca eram reconhecidos).
+const DRAFT_OUTPUT_FORMAT = {
+  type: "json_schema" as const,
+  schema: zodOutputFormat(campaignDraftWireSchema).schema,
+};
 
 export type CampaignGenerationInput = {
   client: {
@@ -87,13 +121,22 @@ export type CampaignGenerationInput = {
 };
 
 export type CampaignGenerationResult = {
+  /** Peças já normalizadas: scheduledAt em ISO UTC dentro do período, cotas respeitadas. */
   draft: AiCampaignDraft;
   /** Cotas que a IA entregou abaixo do pedido (aviso, não erro). */
   shortfalls: string[];
+  /** Peças descartadas/cortadas na normalização (aviso, não erro). */
+  warnings: string[];
+};
+
+export type CampaignGenerationOptions = {
+  /** Instante (epoch ms) em que TODAS as chamadas precisam ter terminado. */
+  deadlineMs: number;
 };
 
 export async function generateCampaignDraft(
   input: CampaignGenerationInput,
+  options: CampaignGenerationOptions,
 ): Promise<CampaignGenerationResult> {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   const model = process.env.ANTHROPIC_MODEL || "claude-sonnet-4-6";
@@ -102,47 +145,133 @@ export async function generateCampaignDraft(
     throw new Error("ANTHROPIC_API_KEY não configurada no ambiente do servidor.");
   }
 
-  const anthropic = new Anthropic({
-    apiKey,
-    timeout: 90_000,
-    maxRetries: 2,
-  });
+  const chunks = splitQuotaPlan(input.quotas, input.extras, ITENS_POR_CHAMADA);
+  if (chunks.length === 0) throw new Error("Nada a gerar: o plano de cotas está vazio.");
 
-  const response = await anthropic.messages.parse({
-    model,
-    max_tokens: 7000,
-    system: buildSystemPrompt(input.language ?? "pt-BR"),
-    messages: [
+  // maxRetries baixo: uma nova tentativa só se couber no prazo (o `signal` corta tudo no deadline).
+  const anthropic = new Anthropic({ apiKey, maxRetries: 1 });
+  const fallbacks = {
+    campaignName: `${input.client.companyName} · ${input.period.startsAt}`,
+    campaignGoal: `Conteúdo do período ${input.period.startsAt} a ${input.period.endsAt}`,
+    summary: `Lote de conteúdo de ${input.client.companyName} para ${input.period.startsAt} a ${input.period.endsAt}.`,
+  };
+
+  const results = await runPool(chunks, CHAMADAS_PARALELAS, (chunk, index) =>
+    generateChunk(anthropic, model, input, chunk, index, chunks.length, options.deadlineMs, fallbacks),
+  );
+
+  const warnings = results.flatMap((r) => r.dropped);
+  const merged: DraftItem[] = results.flatMap((r) => r.draft.contentItems);
+
+  // Cota é da aplicação: excedente é cortado (antes derrubava o lote inteiro).
+  const { kept, dropped: excess } = enforceQuotas(merged, input.quotas, input.extras);
+  if (excess > 0) warnings.push(`${excess} peça(s) acima da cota descartada(s)`);
+
+  // Datas: dia local do contrato dentro do período; cota mensal presa ao próprio mês.
+  const timezone = input.contract.timezone;
+  const scheduled = applyQuotaWindows(
+    kept.map((item, index) => ({ ...item, scheduledAt: normalizeScheduledAt(item.scheduledAt, index, input.period, timezone) })),
+    input.quotas,
+    timezone,
+  );
+
+  const { shortfalls } = checkQuotas(scheduled, input.quotas, input.extras);
+  const head = results[0].draft;
+  const draft = {
+    campaignName: head.campaignName,
+    campaignGoal: head.campaignGoal,
+    summary: head.summary,
+    // Canal/formato/objetivo já conferidos contra os enums em sanitizeDraft.
+    contentItems: scheduled,
+  } as AiCampaignDraft;
+
+  return { draft, shortfalls, warnings };
+}
+
+/** Executa no máximo `limit` tarefas ao mesmo tempo, preservando a ordem do resultado. */
+async function runPool<T, R>(items: T[], limit: number, worker: (item: T, index: number) => Promise<R>) {
+  const results = new Array<R>(items.length);
+  let next = 0;
+  const lanes = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (next < items.length) {
+      const index = next++;
+      results[index] = await worker(items[index], index);
+    }
+  });
+  await Promise.all(lanes);
+  return results;
+}
+
+async function generateChunk(
+  anthropic: Anthropic,
+  model: string,
+  input: CampaignGenerationInput,
+  chunk: { quotas: QuotaLine[]; extras: Record<string, number> },
+  index: number,
+  total: number,
+  deadlineMs: number,
+  fallbacks: { campaignName: string; campaignGoal: string; summary: string },
+) {
+  const remaining = deadlineMs - Date.now();
+  if (remaining < PRAZO_MINIMO_MS) {
+    throw new Error(`Sem tempo para chamar a IA (restam ${Math.round(remaining / 1000)}s). O job volta para a fila.`);
+  }
+
+  let message: Anthropic.Message;
+  try {
+    const stream = anthropic.messages.stream(
       {
-        role: "user",
-        content: buildCampaignPrompt(input),
+        model,
+        max_tokens: MAX_TOKENS_POR_CHAMADA,
+        system: buildSystemPrompt(input.language ?? "pt-BR"),
+        messages: [{ role: "user", content: buildCampaignPrompt(input, chunk, index, total) }],
+        output_config: { format: DRAFT_OUTPUT_FORMAT },
       },
-    ],
-    output_config: {
-      format: zodOutputFormat(campaignDraftSchema),
-    },
-  });
-
-  if (response.stop_reason === "refusal") {
-    throw new Error("A IA recusou a geração deste conteúdo. Revise o contexto do pedido.");
+      {
+        // O timeout do SDK cobre só até os cabeçalhos; o signal corta o streaming inteiro no prazo.
+        timeout: Math.min(remaining, 60_000),
+        signal: AbortSignal.timeout(remaining),
+      },
+    );
+    message = await stream.finalMessage();
+  } catch (error) {
+    if (error instanceof Anthropic.APIUserAbortError || (error instanceof Error && error.name === "TimeoutError")) {
+      throw new Error(`A IA não terminou dentro do prazo (${Math.round(remaining / 1000)}s) — parte ${index + 1}/${total}.`);
+    }
+    if (error instanceof Anthropic.APIError) {
+      throw new Error(`Erro da API da IA (${error.status ?? "rede"}) — parte ${index + 1}/${total}: ${error.message}`);
+    }
+    throw error;
   }
 
-  if (response.stop_reason === "max_tokens") {
-    throw new Error("A resposta da IA excedeu o limite de tokens. Reduza a quantidade de peças no contrato.");
+  // stop_reason ANTES de qualquer parse.
+  if (message.stop_reason === "refusal") {
+    const category = message.stop_details?.category ? ` (categoria: ${message.stop_details.category})` : "";
+    throw new Error(`A IA recusou gerar este conteúdo${category}. Revise o contexto do cliente e do brand kit.`);
+  }
+  if (message.stop_reason === "max_tokens") {
+    throw new Error(
+      `A resposta da IA foi cortada no limite de ${MAX_TOKENS_POR_CHAMADA} tokens (parte ${index + 1}/${total}). ` +
+        `Reduza o tamanho dos textos pedidos ou a quantidade de peças por chamada.`,
+    );
+  }
+  if (message.stop_reason !== "end_turn" && message.stop_reason !== "stop_sequence") {
+    throw new Error(`A IA parou de forma inesperada (stop_reason: ${message.stop_reason ?? "desconhecido"}).`);
   }
 
-  const draft = response.parsed_output;
-  if (!draft) {
-    throw new Error("A IA não devolveu um rascunho estruturado válido.");
+  const raw = message.content
+    .filter((block): block is Anthropic.TextBlock => block.type === "text")
+    .map((block) => block.text)
+    .join("");
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new Error(`A IA devolveu JSON inválido (parte ${index + 1}/${total}).`);
   }
 
-  // Excesso de peças = erro (o job tenta de novo); falta = aviso guardado no resultado do job.
-  const { errors, shortfalls } = checkQuotas(draft.contentItems, input.quotas, input.extras);
-  if (errors.length > 0) {
-    throw new Error(`A IA excedeu a cota contratada — ${errors.join("; ")}`);
-  }
-
-  return { draft, shortfalls };
+  return sanitizeDraft(parsed, { channels: CHANNELS, formats: CONTENT_FORMATS, objectives: CONTENT_OBJECTIVES }, fallbacks);
 }
 
 function buildSystemPrompt(language: string) {
@@ -157,13 +286,18 @@ function buildSystemPrompt(language: string) {
     "Não use termos proibidos. Inclua os termos obrigatórios somente quando forem naturais e relevantes.",
     "Cada peça pertence a um conceito (campo concept). Peças que adaptam a mesma ideia para canais ou formatos diferentes DEVEM repetir exatamente o mesmo texto em concept — é assim que o sistema mede qual ideia gera leads.",
     "Preencha hook (a frase de abertura da peça) e cta (a chamada para ação). Varie hooks e CTAs entre peças do mesmo conceito para que possam ser comparados.",
+    "Respeite os tamanhos máximos indicados no schema: textos maiores serão cortados.",
   ].join("\n");
 }
 
-function buildCampaignPrompt(input: CampaignGenerationInput) {
+function buildCampaignPrompt(
+  input: CampaignGenerationInput,
+  chunk: { quotas: QuotaLine[]; extras: Record<string, number> },
+  index: number,
+  total: number,
+) {
   const brand = input.brandKit;
   const contract = input.contract;
-
 
   const specialDates = contract.specialDateRules
     .filter((rule) => rule.enabled)
@@ -178,7 +312,10 @@ function buildCampaignPrompt(input: CampaignGenerationInput) {
 
   return JSON.stringify(
     {
-      task: "Criar uma campanha editorial completa para o período solicitado.",
+      task:
+        total > 1
+          ? `Criar a parte ${index + 1} de ${total} de uma campanha editorial para o período solicitado (as outras partes são geradas separadamente; crie apenas as peças desta parte).`
+          : "Criar uma campanha editorial completa para o período solicitado.",
       period: input.period,
       client: input.client,
       brandKit: {
@@ -193,13 +330,15 @@ function buildCampaignPrompt(input: CampaignGenerationInput) {
         market: contract.market,
         timezone: contract.timezone,
         approvalRequired: contract.approvalRequired,
-        quotasForThisPeriod: input.quotas,
+        quotasForThisPeriod: chunk.quotas,
+        extrasAllowedByFormat: chunk.extras,
         specialDates,
       },
       rules: [
-        "Crie EXATAMENTE a quantidade de peças indicada em quotasForThisPeriod para cada canal e formato — nem mais, nem menos. Peças extras só para datas especiais marcadas como isExtra=true.",
+        "Crie EXATAMENTE a quantidade de peças indicada em quotasForThisPeriod para cada canal e formato — nem mais, nem menos. Peças extras só para datas especiais marcadas como isExtra=true, até extrasAllowedByFormat.",
         "Caso uma data especial isExtra=false coincida com uma quota regular, ela deve substituir uma peça regular, não aumentar a entrega.",
-        "Distribua as peças em datas do período e retorne scheduledAt em ISO 8601 com offset do fuso do contrato.",
+        "Distribua as peças em datas do período e retorne scheduledAt em ISO 8601 com o offset do fuso do contrato (ex.: 2026-10-03T10:00:00-04:00).",
+        "Quando uma quota tiver 'window', agende essas peças somente entre window.startsAt e window.endsAt.",
         "Varie pilares e objetivos para evitar repetição.",
         "Gere hashtags apenas para redes sociais; para e-mail, Google Business e WhatsApp, retorne lista vazia.",
         "Cada título deve ser específico, acionável e compatível com o contexto local do cliente.",
