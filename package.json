@@ -9,8 +9,8 @@
     "lint": "eslint",
     "audit": "python3 scripts/auditoria.py",
     "test:internal": "node scripts/testes.js",
-    "test:db": "node tests/db/run.mjs",
-    "test": "node scripts/testes.js && node tests/db/run.mjs"
+    "test:db": "node tests/db/run.mjs && node tests/db/geracao.mjs",
+    "test": "node scripts/testes.js && pnpm test:db"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.115.0",
