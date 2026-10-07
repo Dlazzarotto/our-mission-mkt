@@ -62,6 +62,11 @@ No SQL Editor do Supabase cada arquivo roda numa transação só: se falhar, nad
 pode rodar de novo depois de corrigir. Aplicar UM arquivo por vez. As 5 primeiras não são
 re-executáveis (o `pnpm run audit` avisa) — isso é esperado, já estão em produção.
 As 3 de out/2026 também já estão em produção: NUNCA editar; corrigir com migration nova.
+A integração Supabase ↔ GitHub está com o **deploy automático de migrations para produção
+desligado** (07/out/2026): migration só entra pelo SQL Editor, à mão. O histórico do Supabase
+(`supabase_migrations.schema_migrations`) está vazio — se um dia ligar o deploy automático ou usar
+`supabase db push`, antes é preciso registrar ali as migrations já aplicadas, senão ele tenta
+rodar tudo desde a primeira. O deploy do SITE (Vercel ↔ GitHub) é outro: merge na `main` publica.
 
 ## Stack
 
