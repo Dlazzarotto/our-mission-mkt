@@ -109,7 +109,7 @@ Branch `fase1-medicao` (ainda NÃO está na `main`):
 1. ~~Aplicar as migrations 0001, 0002 e 0003 no Supabase~~ — feito em 07/out/2026, sem erro.
    Daqui em diante qualquer correção nelas é migration NOVA.
 2. Variável `TRACKING_SALT` na Vercel (texto longo aleatório).
-3. Confirmar plano Vercel Pro (cron de hora em hora). No Hobby: voltar para `0 2 * * *`.
+3. ~~Confirmar plano Vercel~~ — é **Pro** (confirmado 07/out/2026): cron de hora em hora mantido.
 4. Merge de `fase1-medicao` na `main` → deploy.
 5. Teste real: criar link na aba Resultados → abrir no celular → preencher o formulário →
    lead deve aparecer com "origem comprovada".
