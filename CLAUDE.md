@@ -115,7 +115,7 @@ calendário contínuo, IA em en-US). O que a Fase 1 entregou:
 
 1. ~~Aplicar as migrations 0001, 0002 e 0003 no Supabase~~ — feito em 07/out/2026, sem erro.
    Daqui em diante qualquer correção nelas é migration NOVA.
-2. Variável `TRACKING_SALT` na Vercel (texto longo aleatório) — confirmar com o David se já foi criada.
+2. ~~Variável `TRACKING_SALT` na Vercel~~ — cadastrada (confirmado pelo David em 08/out/2026).
 3. ~~Confirmar plano Vercel~~ — é **Pro** (confirmado 07/out/2026): cron de hora em hora mantido.
 4. ~~Merge na `main` → deploy~~ — feito em 07/out/2026.
 5. Teste real: criar link na aba Resultados → abrir no celular → preencher o formulário →
