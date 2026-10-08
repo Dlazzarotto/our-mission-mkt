@@ -48,7 +48,7 @@ const optionalText = (max: number) =>
 
 const requestSchema = z
   .object({
-    oml: z.string().trim().refine(isValidSlug, "Link inválido"),
+    oml: z.string().trim().refine(isValidSlug, "Invalid link."),
     oml_vid: z.string().optional(),
     lang: z.enum(FORM_LANGUAGES).optional().catch(undefined),
     name: optionalText(120),

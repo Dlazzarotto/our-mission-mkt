@@ -23,8 +23,8 @@ pesquisa de mercado, workflow de 10 fases e, desde out/2026, **medição e atrib
 ## Onde fica cada coisa
 
 - Produção: https://our-mission-mkt.vercel.app (login obrigatório; públicas só `/r/*` e `/f/*`)
-- Repositório: https://github.com/Dlazzarotto/our-mission-mkt — trabalho em andamento na branch
-  `fase1-medicao`, PR #1 aberto para a `main` (a `main` faz deploy automático na Vercel)
+- Repositório: https://github.com/Dlazzarotto/our-mission-mkt — a `main` faz deploy automático na
+  Vercel. A Fase 1 entrou na `main` em 07/out/2026 (PRs #1, #2 e #3); `fase1-medicao` está obsoleta.
 - Pasta local do David: dentro do OneDrive (`C:\Users\PeaceonTax\OneDrive - Peace on Tax\Confidencial-David\...`).
   Se precisar entregar arquivos por ZIP, o padrão confiável é extrair numa pasta temporária e
   usar `Copy-Item` para o projeto — `Expand-Archive` direto em cima do OneDrive já falhou.
@@ -62,6 +62,11 @@ No SQL Editor do Supabase cada arquivo roda numa transação só: se falhar, nad
 pode rodar de novo depois de corrigir. Aplicar UM arquivo por vez. As 5 primeiras não são
 re-executáveis (o `pnpm run audit` avisa) — isso é esperado, já estão em produção.
 As 3 de out/2026 também já estão em produção: NUNCA editar; corrigir com migration nova.
+A integração Supabase ↔ GitHub está com o **deploy automático de migrations para produção
+desligado** (07/out/2026): migration só entra pelo SQL Editor, à mão. O histórico do Supabase
+(`supabase_migrations.schema_migrations`) está vazio — se um dia ligar o deploy automático ou usar
+`supabase db push`, antes é preciso registrar ali as migrations já aplicadas, senão ele tenta
+rodar tudo desde a primeira. O deploy do SITE (Vercel ↔ GitHub) é outro: merge na `main` publica.
 
 ## Stack
 
@@ -84,9 +89,11 @@ pnpm build
 pelo Node (exige Node 22.18+): módulos testados (`src/lib/campaigns/period.ts`,
 `src/lib/marketing/tracking.ts`) só podem usar sintaxe de tipo apagável e nenhum import `@/`.
 
-## Estado atual (06/out/2026)
+## Estado atual (07/out/2026)
 
-Branch `fase1-medicao` (ainda NÃO está na `main`):
+Fase 1 em produção (`main`), com as correções da auditoria de 07/out (uma FK por par de tabelas,
+append-only real, atribuição só com clique, totais calculados pelo banco, geração transacional,
+calendário contínuo, IA em en-US). O que a Fase 1 entregou:
 
 1. `202610060001_integridade_tenant_e_fila.sql` — **brecha corrigida**: antes, a RLS conferia só
    o `organization_id` da própria linha, e a agência B gravava campanha no cliente da agência A
@@ -108,9 +115,9 @@ Branch `fase1-medicao` (ainda NÃO está na `main`):
 
 1. ~~Aplicar as migrations 0001, 0002 e 0003 no Supabase~~ — feito em 07/out/2026, sem erro.
    Daqui em diante qualquer correção nelas é migration NOVA.
-2. Variável `TRACKING_SALT` na Vercel (texto longo aleatório).
+2. Variável `TRACKING_SALT` na Vercel (texto longo aleatório) — confirmar com o David se já foi criada.
 3. ~~Confirmar plano Vercel~~ — é **Pro** (confirmado 07/out/2026): cron de hora em hora mantido.
-4. Merge de `fase1-medicao` na `main` → deploy.
+4. ~~Merge na `main` → deploy~~ — feito em 07/out/2026.
 5. Teste real: criar link na aba Resultados → abrir no celular → preencher o formulário →
    lead deve aparecer com "origem comprovada".
 6. Lint: 3 erros ANTIGOS do React Compiler (`src/app/workflow/page.tsx`, `equipe.tsx`,
@@ -159,8 +166,8 @@ Fases seguintes (aguardar aprovação do David antes de cada uma):
 ## Primeira sessão no Claude Code
 
 1. Ler este arquivo e `docs/MASTER-PROMPT-MARKETING.md`.
-2. `pnpm install` e `pnpm test` (esperado: 79 internos + 72 de banco + 18 de geração, tudo verde).
-3. Auditar a branch `fase1-medicao` procurando erro — sem defender o que está feito — e
+2. `pnpm install` e `pnpm test` (esperado: 80 internos + 72 de banco + 18 de geração, tudo verde).
+3. Auditar o que for mexer procurando erro — sem defender o que está feito — e
    reportar achados antes de qualquer mudança.
 4. Guiar o David pela lista PENDENTE acima, um passo por vez, com comandos PowerShell prontos.
 5. Só começar a Fase 2 depois da aprovação dele.
