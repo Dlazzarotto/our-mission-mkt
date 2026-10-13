@@ -115,7 +115,7 @@ calendário contínuo, IA em en-US). O que a Fase 1 entregou:
 
 1. ~~Aplicar as migrations 0001, 0002 e 0003 no Supabase~~ — feito em 07/out/2026, sem erro.
    Daqui em diante qualquer correção nelas é migration NOVA.
-2. Variável `TRACKING_SALT` na Vercel (texto longo aleatório) — confirmar com o David se já foi criada.
+2. ~~Variável `TRACKING_SALT` na Vercel~~ — cadastrada (confirmado pelo David em 08/out/2026).
 3. ~~Confirmar plano Vercel~~ — é **Pro** (confirmado 07/out/2026): cron de hora em hora mantido.
 4. ~~Merge na `main` → deploy~~ — feito em 07/out/2026.
 5. Teste real: criar link na aba Resultados → abrir no celular → preencher o formulário →
@@ -158,6 +158,18 @@ Texto completo em `docs/MASTER-PROMPT-MARKETING.md`. O Master Prompt descreve o 
 Fases seguintes (aguardar aprovação do David antes de cada uma):
 - **Fase 2** — importação de métricas por API (Meta Graph / Instagram Insights primeiro),
   investimento de anúncios por campanha, relatório diário (formato da seção 24 do Master Prompt).
+  **Decisão pendente (09/out/2026): Meta Muse.** O Muse for Small Business (lançado em set/2026,
+  EUA e Canadá, grátis com limite) conecta Instagram profissional, Páginas e contas de anúncio e
+  ajuda na análise e na criação de anúncios. Ele é APOIO, não substitui o sistema: não vê clique
+  `/r`, lead, funil nem receita (estão no nosso banco); número dito por agente de IA não entra em
+  relatório de cliente (regra "a IA nunca calcula número"); não há API/exportação conhecida para
+  trazer os dados ao CRM; não cobre TikTok/YouTube/Google/LinkedIn; e não está confirmado que uma
+  agência gerencie vários clientes nele. Atender os clientes dos clientes no WhatsApp é a
+  WhatsApp Business Platform, outra coisa. **Próximo passo:** teste de 2 semanas do Muse na
+  página da Our Mission ou de um cliente, respondendo: (1) gerencia mais de um cliente?
+  (2) exporta dados? (3) economiza horas de verdade? Conforme o resultado, a Fase 2 pode encolher
+  para só **importar os números da Meta para o banco**, ao lado de leads e receita — a parte que o
+  Muse não faz. Não começar a Fase 2 antes desse resultado e da aprovação do David.
 - **Fase 3** — reciclagem de vencedores: família com nota S/A gera variações (hook/CTA) para
   aprovação; registro de testes A/B com uma variável por vez.
 - **Fase 4** — publicação por API com os 3 níveis de autonomia (seção 22), teto de gasto e alertas.
